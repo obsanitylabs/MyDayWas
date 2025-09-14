@@ -174,6 +174,11 @@ function App() {
       
     console.log('Handle submit: Entry content prepared, length:', entryContent.length);
     
+    // Show immediate feedback
+    setTimeout(() => {
+      setAiResponse('🔐 Encrypting your thoughts and storing them securely on Japan Smart Chain...');
+    }, 500);
+    
     // Submit to blockchain
     const result = await submitEntry(entryContent, sentiment);
     
@@ -182,6 +187,7 @@ function App() {
       if (result.error?.includes('saved locally')) {
         console.log('Handle submit: Entry saved locally, continuing...');
         // Entry was saved locally, continue with success flow but show warning
+      setAiResponse(''); // Clear the loading message
       } else {
         console.error('Handle submit: Submission failed:', result.error);
         alert(`❌ ${result.error || 'Failed to submit entry. Please try again.'}`);

@@ -193,6 +193,13 @@ export const useEnhancedJSC = () => {
       
       console.log('Submit entry: Got signer, starting encryption...');
       
+      // Test encryption first
+      const testResult = await encryptionService.testEncryption('test', userAddress, signer);
+      if (!testResult) {
+        throw new Error('Encryption test failed. Please try again.');
+      }
+      console.log('📝 Submit entry: Encryption test passed');
+      
       // Encrypt the content first
       let encryptionResult;
       try {
