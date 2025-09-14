@@ -39,8 +39,8 @@ function App() {
     getAvailableProviders,
     getUnsyncedCount,
     clearError,
-    decryptEntry,
-    decryptAllEntries,
+    decryptEntry: handleDecryptEntry,
+    decryptAllEntries: handleDecryptAll,
     decryptedEntries,
     isDecrypting
   } = useEnhancedJSC();
@@ -70,7 +70,7 @@ function App() {
       await window.ethereum.request({
         method: 'wallet_addEthereumChain',
         params: [{
-          chainId: '5278000', // 5278000 in hex
+          chainId: '0x508A28', // 5278000 in hex
           chainName: 'JSC Kaigan Testnet',
           nativeCurrency: {
             name: 'JETH',
@@ -84,7 +84,13 @@ function App() {
       alert('JSC Kaigan Testnet has been added to your wallet!');
     } catch (error) {
       console.error('Failed to add JSC network:', error);
-      alert('JSC Kaigan Testnet has been added to your wallet!');
+      if (error.code === 4001) {
+        alert('User rejected the request to add JSC network.');
+      } else if (error.code === -32602) {
+        alert('JSC Kaigan Testnet may already be added to your wallet.');
+      } else {
+        alert('Failed to add JSC network. Please try again or add it manually.');
+      }
     }
   };
   // Get current time and determine if it's day or night
@@ -506,6 +512,20 @@ function App() {
         
         {isConnected && entries.length > 0 && !isLoading && (
           <div className="space-y-6">
+          <div className="flex justify-between items-center mb-6">
+            <h3 className="text-xl font-semibold text-gray-800">Your Entries</h3>
+            {entries.some(entry => entry.encrypted && !decryptedEntries.has(entry.id)) && (
+              <button
+                onClick={handleDecryptAll}
+                disabled={isLoading}
+                className="bg-green-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-300 flex items-center space-x-2"
+              >
+                {isLoading && <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>}
+                <span>View All</span>
+              </button>
+            )}
+          </div>
+          
           {entries.map((entry) => (
             <div key={entry.id} className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-lg p-4 sm:p-6 hover:shadow-xl transition-shadow duration-300 border border-white/20">
               <div className="flex items-center justify-between mb-4">
@@ -543,7 +563,29 @@ function App() {
                 </div>
               </div>
               <div className="bg-white/60 rounded-xl p-3 sm:p-4 border border-gray-100">
-                <p className="text-gray-800 leading-relaxed text-sm sm:text-base font-medium">{entry.content}</p>
+                {entry.encrypted && !decryptedEntries.has(entry.id) ? (
+                  <div className="flex items-center justify-between">
+                    <p className="text-gray-500 italic text-sm sm:text-base">🔒 Encrypted content - click View to decrypt</p>
+                    <button
+                      onClick={() => handleDecryptEntry(entry.id)}
+                      disabled={isDecrypting(entry.id)}
+                      className="bg-blue-600 text-white px-3 py-1 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-300 flex items-center space-x-1"
+                    >
+                      {isDecrypting(entry.id) && <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white"></div>}
+                      <span>View</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div>
+                    <p className="text-gray-800 leading-relaxed text-sm sm:text-base font-medium">{entry.content}</p>
+                    {decryptedEntries.has(entry.id) && (
+                      <div className="mt-2 text-xs text-green-600 flex items-center space-x-1">
+                        <span>🔓</span>
+                        <span>Decrypted successfully</span>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           ))}
