@@ -167,26 +167,81 @@ export const useEnhancedJSC = () => {
     if (!isConnected) {
       return { success: false, error: 'Wallet not connected' };
     }
+    
+    if (!content || content.trim().length === 0) {
+      return { success: false, error: 'Entry content cannot be empty' };
+    }
 
     setIsLoading(true);
     setError('');
+    
+    console.log('Submit entry: Starting submission process...');
+    console.log('Submit entry: Content length:', content.length);
+    console.log('Submit entry: Sentiment:', sentiment);
+    console.log('Submit entry: User address:', userAddress);
+    console.log('Submit entry: Online status:', isOnline);
 
     try {
-      const signer = await walletService.getSigner();
-      
-      // Always try to store on blockchain immediately if online
       if (!isOnline) {
-        return { success: false, error: 'You are offline. Please connect to the internet to submit entries.' };
+        throw new Error('You are offline. Please connect to the internet to submit entries.');
       }
-
+      
+      const signer = await walletService.getSigner();
+      if (!signer) {
+        throw new Error('Failed to get wallet signer. Please reconnect your wallet.');
+      }
+      
+      console.log('Submit entry: Got signer, starting encryption...');
+      
       // Encrypt the content first
-      const encryptionResult = await encryptionService.encryptData(content, userAddress, signer);
+      let encryptionResult;
+      try {
+        encryptionResult = await encryptionService.encryptData(content, userAddress, signer);
+        console.log('Submit entry: Encryption successful');
+      } catch (encryptionError) {
+        console.error('Submit entry: Encryption failed:', encryptionError);
+        throw new Error(`Encryption failed: ${encryptionError.message}`);
+      }
+      
+      console.log('Submit entry: Starting blockchain submission...');
       
       // Store directly on blockchain
-      const transactionHash = await jscService.writeEntry(
-        encryptionResult.encryptedData,
-        sentiment
-      );
+      let transactionHash;
+      try {
+        transactionHash = await jscService.writeEntry(
+          encryptionResult.encryptedData,
+          sentiment
+        );
+        console.log('Submit entry: Blockchain submission successful, tx:', transactionHash);
+      } catch (blockchainError) {
+        console.error('Submit entry: Blockchain submission failed:', blockchainError);
+        
+        // Save locally if blockchain fails
+        const localEntry: LocalDiaryEntry = {
+          id: Date.now().toString(),
+          date: new Date().toISOString().split('T')[0],
+          content,
+          sentiment,
+          encrypted: true,
+          blockchainStored: false,
+          encryptionData: encryptionResult,
+          createdAt: Date.now()
+        };
+
+        localStorageService.saveEntry(localEntry, userAddress);
+        
+        const uiEntry: DiaryEntry = {
+          id: localEntry.id,
+          date: localEntry.date,
+          content: localEntry.content,
+          sentiment: localEntry.sentiment,
+          encrypted: localEntry.encrypted,
+          blockchainStored: false
+        };
+        setEntries(prev => [uiEntry, ...prev]);
+        
+        throw blockchainError; // Re-throw to show user the blockchain error
+      }
 
       // Create entry with blockchain data
       const localEntry: LocalDiaryEntry = {
@@ -478,17 +533,25 @@ export const useEnhancedJSC = () => {
     if (!isConnected) {
       return { success: false, error: 'Wallet not connected' };
     }
+    
+    if (!entryId) {
+      return { success: false, error: 'Invalid entry ID' };
+    }
 
     setIsDecrypting(prev => new Set([...prev, entryId]));
+    
+    console.log('Decrypt entry: Starting decryption for entry:', entryId);
 
     try {
       const entry = entries.find(e => e.id === entryId);
       if (!entry) {
+        console.error('Decrypt entry: Entry not found:', entryId);
         return { success: false, error: 'Entry not found' };
       }
 
       // If already decrypted, return current content
       if (decryptedEntries.has(entryId)) {
+        console.log('Decrypt entry: Entry already decrypted');
         return { success: true, content: entry.content };
       }
 
@@ -497,21 +560,36 @@ export const useEnhancedJSC = () => {
       const localEntry = localEntries.find(local => local.id === entryId);
 
       if (!localEntry?.encryptionData) {
+        console.error('Decrypt entry: No encryption data found for entry:', entryId);
         return { success: false, error: 'No encryption data found for this entry' };
       }
+      
+      console.log('Decrypt entry: Found encryption data, getting signer...');
 
       const signer = await walletService.getSigner();
+      if (!signer) {
+        return { success: false, error: 'Failed to get wallet signer for decryption' };
+      }
+      
+      console.log('Decrypt entry: Starting decryption process...');
       
       // Decrypt the content
-      const decryptedContent = await encryptionService.decryptData(
-        {
-          encryptedData: localEntry.encryptionData.encryptedData,
-          encryptionKey: localEntry.encryptionData.encryptionKey,
-          signature: localEntry.encryptionData.signature
-        },
-        userAddress,
-        signer
-      );
+      let decryptedContent;
+      try {
+        decryptedContent = await encryptionService.decryptData(
+          {
+            encryptedData: localEntry.encryptionData.encryptedData,
+            encryptionKey: localEntry.encryptionData.encryptionKey,
+            signature: localEntry.encryptionData.signature
+          },
+          userAddress,
+          signer
+        );
+        console.log('Decrypt entry: Decryption successful');
+      } catch (decryptionError) {
+        console.error('Decrypt entry: Decryption failed:', decryptionError);
+        return { success: false, error: `Decryption failed: ${decryptionError.message}` };
+      }
 
       // Update the entry in state with decrypted content
       setEntries(prev => prev.map(e => 
@@ -525,7 +603,7 @@ export const useEnhancedJSC = () => {
 
       return { success: true, content: decryptedContent };
     } catch (error: any) {
-      console.error('Failed to decrypt entry:', error);
+      console.error('Decrypt entry: Unexpected error:', error);
       return { success: false, error: error.message || 'Decryption failed' };
     } finally {
       setIsDecrypting(prev => {

@@ -155,6 +155,8 @@ function App() {
       return;
     }
     
+    console.log('Handle submit: Starting submission...');
+    
     setHasSubmitted(true);
     
     // Determine sentiment from emojis or text
@@ -169,6 +171,8 @@ function App() {
     const entryContent = selectedEmojis.length > 0 
       ? `${selectedEmojis.join(' ')} ${userInput}`.trim()
       : userInput;
+      
+    console.log('Handle submit: Entry content prepared, length:', entryContent.length);
     
     // Submit to blockchain
     const result = await submitEntry(entryContent, sentiment);
@@ -176,11 +180,13 @@ function App() {
     if (!result.success) {
       // Show error but don't reset form if entry was saved locally
       if (result.error?.includes('saved locally')) {
+        console.log('Handle submit: Entry saved locally, continuing...');
         // Entry was saved locally, continue with success flow but show warning
-        console.warn('Entry saved locally:', result.error);
       } else {
-        alert(result.error || 'Failed to submit entry. Please try again.');
+        console.error('Handle submit: Submission failed:', result.error);
+        alert(`❌ ${result.error || 'Failed to submit entry. Please try again.'}`);
         setHasSubmitted(false);
+        setError(result.error || 'Submission failed');
         return;
       }
     }
