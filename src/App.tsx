@@ -39,6 +39,7 @@ function App() {
     getAvailableProviders,
     getUnsyncedCount,
     clearError,
+    clearLocalEntries,
     decryptEntry: handleDecryptEntry,
     decryptAllEntries: handleDecryptAll,
     decryptedEntries,
@@ -273,6 +274,35 @@ function App() {
     }
   };
 
+  const handleClearLocal = async () => {
+    if (!isConnected) {
+      alert('❌ Please connect your wallet first');
+      return;
+    }
+    
+    const unsyncedCount = getUnsyncedCount();
+    if (unsyncedCount === 0) {
+      alert('ℹ️ No local entries to clear');
+      return;
+    }
+    
+    const confirmed = window.confirm(
+      `⚠️ This will permanently delete ${unsyncedCount} local entries that haven't been synced to blockchain.\n\nAre you sure you want to continue?`
+    );
+    
+    if (!confirmed) return;
+    
+    const result = await clearLocalEntries();
+    
+    if (result.success && result.cleared > 0) {
+      alert(`✅ Successfully cleared ${result.cleared} local entries`);
+    } else if (result.cleared === 0 && result.success) {
+      alert('ℹ️ No local entries found to clear');
+    } else if (result.error) {
+      alert(`❌ Clear failed: ${result.error}`);
+    }
+  };
+
   const analyzeSentiment = (text: string): 'positive' | 'negative' | 'neutral' => {
     const positiveWords = ['happy', 'joy', 'grateful', 'love', 'amazing', 'wonderful', 'great', 'good', 'excited', 'blessed'];
     const negativeWords = ['sad', 'angry', 'frustrated', 'terrible', 'awful', 'hate', 'depressed', 'anxious', 'worried', 'stressed'];
@@ -369,14 +399,24 @@ function App() {
         {isConnected && getUnsyncedCount() > 0 && isOnline && (
           <div className="bg-blue-50 border border-blue-200 rounded-2xl p-3 sm:p-4 mb-6 flex flex-col sm:flex-row items-center justify-between space-y-2 sm:space-y-0">
             <p className="text-blue-800 text-xs sm:text-sm text-center sm:text-left">{getUnsyncedCount()} entries pending blockchain sync</p>
-            <button 
-              onClick={handleSync} 
-              disabled={isLoading}
-              className="text-blue-600 hover:text-blue-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-1"
-            >
-              {isLoading && <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-blue-600"></div>}
-              <span>Sync Now</span>
-            </button>
+            <div className="flex items-center space-x-2">
+              <button 
+                onClick={handleSync} 
+                disabled={isLoading}
+                className="text-blue-600 hover:text-blue-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-1"
+              >
+                {isLoading && <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-blue-600"></div>}
+                <span>Sync Now</span>
+              </button>
+              <span className="text-gray-300">|</span>
+              <button 
+                onClick={handleClearLocal} 
+                disabled={isLoading}
+                className="text-red-600 hover:text-red-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Clear Local
+              </button>
+            </div>
           </div>
         )}
 

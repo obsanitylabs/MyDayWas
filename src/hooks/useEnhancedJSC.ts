@@ -536,6 +536,35 @@ export const useEnhancedJSC = () => {
     setError('');
   }, []);
 
+  const clearLocalEntries = useCallback(async (): Promise<{ success: boolean; cleared: number; error?: string }> => {
+    if (!userAddress) {
+      return { success: false, cleared: 0, error: 'No user address available' };
+    }
+
+    try {
+      const unsyncedEntries = localStorageService.getUnsyncedEntries(userAddress);
+      const clearedCount = unsyncedEntries.length;
+      
+      if (clearedCount === 0) {
+        return { success: true, cleared: 0 };
+      }
+
+      // Remove unsynced entries from local storage
+      unsyncedEntries.forEach(entry => {
+        localStorageService.deleteEntry(entry.id, userAddress);
+      });
+
+      // Update UI state - remove unsynced entries
+      setEntries(prev => prev.filter(entry => entry.blockchainStored));
+
+      return { success: true, cleared: clearedCount };
+    } catch (error: any) {
+      const errorMessage = error.message || 'Failed to clear local entries';
+      setError(errorMessage);
+      return { success: false, cleared: 0, error: errorMessage };
+    }
+  }, [userAddress]);
+
   const decryptEntry = async (entryId: string): Promise<{ success: boolean; content?: string; error?: string }> => {
     if (!isConnected) {
       return { success: false, error: 'Wallet not connected' };
@@ -711,6 +740,7 @@ export const useEnhancedJSC = () => {
     getAvailableProviders,
     getUnsyncedCount,
     clearError,
+    clearLocalEntries,
     decryptEntry,
     decryptAllEntries,
     decryptedEntries,
