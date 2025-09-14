@@ -436,42 +436,6 @@ export const useEnhancedJSC = () => {
     }
   };
 
-  const syncPendingEntries = async (): Promise<{ success: boolean; synced: number; error?: string }> => {
-    if (!isConnected || !isOnline) {
-      return { success: false, synced: 0, error: 'Not connected or offline' };
-    }
-
-    try {
-      const unsyncedEntries = localStorageService.getUnsyncedEntries(userAddress);
-      let syncedCount = 0;
-
-      for (const entry of unsyncedEntries) {
-        try {
-          if (entry.encryptionData) {
-            const transactionHash = await jscService.writeEntry(
-              entry.encryptionData.encryptedData,
-              entry.sentiment
-            );
-
-            localStorageService.markAsSynced(entry.id, userAddress, transactionHash);
-            syncedCount++;
-          }
-        } catch (error) {
-          console.error(`Failed to sync entry ${entry.id}:`, error);
-        }
-      }
-
-      if (syncedCount > 0) {
-        await loadEntries(userAddress);
-        await updateBalance();
-      }
-
-      return { success: true, synced: syncedCount };
-    } catch (error: any) {
-      return { success: false, synced: 0, error: error.message };
-    }
-  };
-
   const getGlobalSentiment = async () => {
     try {
       if (isOnline) {
