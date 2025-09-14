@@ -414,7 +414,7 @@ function App() {
                 disabled={isLoading}
                 className="text-red-600 hover:text-red-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Clear Local
+                Clear Pending
               </button>
             </div>
           </div>
