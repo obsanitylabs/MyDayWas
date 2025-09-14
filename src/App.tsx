@@ -485,6 +485,31 @@ function App() {
                 <p className="text-gray-700 text-sm sm:text-lg leading-relaxed">
                   {aiResponse}
                 </p>
+                {/* Transaction Hash Link */}
+                {entries.length > 0 && entries[0].transactionHash && (
+                  <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mt-4">
+                    <div className="flex items-center justify-center space-x-2 mb-2">
+                      <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                      <span className="text-blue-800 font-medium text-sm">Verified on Japan Smart Chain</span>
+                    </div>
+                    <div className="text-center">
+                      <a
+                        href={`https://explorer.kaigan.jsc.dev/tx/${entries[0].transactionHash}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center space-x-2 text-blue-600 hover:text-blue-700 text-xs sm:text-sm font-medium hover:underline transition-colors duration-200"
+                      >
+                        <span>View Transaction</span>
+                        <svg className="w-3 h-3 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                        </svg>
+                      </a>
+                      <p className="text-xs text-gray-500 mt-1 break-all">
+                        {entries[0].transactionHash}
+                      </p>
+                    </div>
+                  </div>
+                )}
                 {userAddress && (
                   <p className="text-xs sm:text-sm text-gray-500 break-all">
                     JSC Address: {userAddress.slice(0, 6)}...{userAddress.slice(-4)} | Balance: {parseFloat(balance).toFixed(4)} JETH
