@@ -238,6 +238,16 @@ function App() {
   };
 
   const handleSync = async () => {
+    if (!isConnected) {
+      alert('❌ Please connect your wallet first');
+      return;
+    }
+    
+    if (!isOnline) {
+      alert('❌ You are offline. Please connect to the internet to sync entries.');
+      return;
+    }
+    
     const result = await syncPendingEntries();
     
     if (result.success && result.synced > 0) {

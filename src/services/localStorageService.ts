@@ -168,7 +168,7 @@ class LocalStorageService {
       }
       
       // Estimate available space (5MB typical limit)
-      const available = 5 * 1024 * 1024 - used;
+      const available = Math.max(0, 5 * 1024 * 1024 - used);
       
       return { used, available };
     } catch (error) {

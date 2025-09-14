@@ -50,10 +50,14 @@ export const useAdvancedAnalytics = () => {
     } catch (error) {
       console.error('Analytics failed:', error);
       setAnalyticsData(prev => ({ ...prev, isAnalyzing: false }));
+      setAnalyticsData(prev => ({
+        ...prev,
+        insights: [`Analysis failed: ${error?.message || 'Unknown error'}`],
+        isAnalyzing: false
+      }));
       throw error;
     }
-        insights: [`Analysis failed: ${error?.message || 'Unknown error'}`]
-  }
+  };
 
   const getPersonalityInsights = () => {
     if (!analyticsData.currentMetrics) return null;

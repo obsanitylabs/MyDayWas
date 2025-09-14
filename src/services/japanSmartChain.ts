@@ -218,9 +218,9 @@ export class JapanSmartChainService {
       // Check if chain was not added
       if (error.code === 4902) {
         // Chain not added, try to add it first
-        await this.addJSCNetwork();
-        // Retry switching after adding
         try {
+          await this.addJSCNetwork();
+          // Retry switching after adding
           await window.ethereum.request({
             method: 'wallet_switchEthereumChain',
             params: [{ chainId: JSC_CONFIG.chainId }],

@@ -99,6 +99,13 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
                 </button>
               );
             })}
+            
+            {availableProviders.length === 0 && (
+              <div className="text-center py-8">
+                <p className="text-gray-500 mb-4">No wallet providers detected</p>
+                <p className="text-sm text-gray-400">Please install MetaMask or another Web3 wallet</p>
+              </div>
+            )}
           </div>
 
           <div className="mt-6 p-4 bg-gray-50 rounded-lg">

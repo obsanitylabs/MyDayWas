@@ -629,6 +629,7 @@ export const useEnhancedJSC = () => {
     decryptEntry,
     decryptAllEntries,
     decryptedEntries,
-    isDecrypting: (entryId: string) => isDecrypting.has(entryId)
+    isDecrypting: (entryId: string) => isDecrypting.has(entryId),
+    lastTransactionHash
   };
 };
