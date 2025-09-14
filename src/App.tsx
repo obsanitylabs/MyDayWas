@@ -674,6 +674,18 @@ function App() {
                   </div>
                 )}
               </div>
+              {entry.transactionHash && (
+                <div className="mt-3 text-center">
+                  <a 
+                    href={`https://explorer.kaigan.jsc.dev/tx/${entry.transactionHash}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-600 hover:text-blue-800 underline text-xs break-all"
+                  >
+                    View on JSC Explorer: {entry.transactionHash.slice(0, 10)}...{entry.transactionHash.slice(-8)}
+                  </a>
+                </div>
+              )}
             </div>
           ))}
           </div>
