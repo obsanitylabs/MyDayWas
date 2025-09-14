@@ -407,6 +407,10 @@ export const useEnhancedJSC = () => {
     return localStorageService.getUnsyncedEntries(userAddress).length;
   };
 
+  const clearError = useCallback(() => {
+    setError('');
+  }, []);
+
   const clearError = () => {
     setError('');
   };
