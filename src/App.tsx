@@ -38,7 +38,11 @@ function App() {
     getGlobalSentiment,
     getAvailableProviders,
     getUnsyncedCount,
-    clearError
+    clearError,
+    decryptEntry,
+    decryptAllEntries,
+    decryptedEntries,
+    isDecrypting
   } = useEnhancedJSC();
 
   const {
