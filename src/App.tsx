@@ -389,21 +389,21 @@ function App() {
         )}
 
         {isConnected && !isOnline && (
-          <div className="bg-yellow-50 border border-yellow-200 rounded-2xl p-4 sm:p-6 mb-6 text-center">
+          <div className="bg-yellow-50/95 backdrop-blur-sm border border-yellow-200 rounded-2xl p-4 sm:p-6 mb-6 text-center shadow-lg">
             <WifiOff className="w-8 h-8 text-yellow-600 mx-auto mb-2" />
-            <p className="text-yellow-800 mb-2">You're offline</p>
-            <p className="text-yellow-700 text-xs sm:text-sm">Your entries will be saved locally and synced when you're back online.</p>
+            <p className="text-yellow-900 mb-2 font-bold">You're offline</p>
+            <p className="text-yellow-800 text-xs sm:text-sm font-medium">Your entries will be saved locally and synced when you're back online.</p>
           </div>
         )}
 
         {isConnected && getUnsyncedCount() > 0 && isOnline && (
-          <div className="bg-blue-50 border border-blue-200 rounded-2xl p-3 sm:p-4 mb-6 flex flex-col sm:flex-row items-center justify-between space-y-2 sm:space-y-0">
-            <p className="text-blue-800 text-xs sm:text-sm text-center sm:text-left">{getUnsyncedCount()} entries pending blockchain sync</p>
+          <div className="bg-blue-50/95 backdrop-blur-sm border border-blue-200 rounded-2xl p-3 sm:p-4 mb-6 flex flex-col sm:flex-row items-center justify-between space-y-2 sm:space-y-0 shadow-lg">
+            <p className="text-blue-900 text-xs sm:text-sm text-center sm:text-left font-semibold">{getUnsyncedCount()} entries pending blockchain sync</p>
             <div className="flex items-center space-x-2">
               <button 
                 onClick={handleSync} 
                 disabled={isLoading}
-                className="text-blue-600 hover:text-blue-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-1"
+                className="text-blue-700 hover:text-blue-900 text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-1"
               >
                 {isLoading && <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-blue-600"></div>}
                 <span>Sync Now</span>
@@ -412,7 +412,7 @@ function App() {
               <button 
                 onClick={handleClearLocal} 
                 disabled={isLoading}
-                className="text-red-600 hover:text-red-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                className="text-red-700 hover:text-red-900 text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Clear Pending
               </button>
@@ -424,10 +424,10 @@ function App() {
           <div className="bg-white rounded-3xl shadow-xl p-4 sm:p-8 md:p-12">
             <div className="text-center mb-8">
               <Heart className="w-12 h-12 text-red-400 mx-auto mb-4" />
-              <h2 className="text-2xl sm:text-3xl md:text-4xl font-bold text-gray-800 mb-4">
+              <h2 className="text-2xl sm:text-3xl md:text-4xl font-bold text-gray-900 mb-4">
                 How are you today?
               </h2>
-              <p className="text-gray-600 text-sm sm:text-lg">
+              <p className="text-gray-800 text-sm sm:text-lg font-medium">
                 Share your thoughts, feelings, and emotions. Your words will be encrypted and stored securely on the blockchain.
               </p>
             </div>
@@ -435,7 +435,7 @@ function App() {
             <div className="space-y-6">
               {/* Emoji Selector */}
               <div className="text-center">
-                <p className="text-gray-600 mb-4 text-xs sm:text-sm">Select one or more emojis, and/or write your thoughts below.</p>
+                <p className="text-gray-800 mb-4 text-xs sm:text-sm font-medium">Select one or more emojis, and/or write your thoughts below.</p>
                 <div className="flex justify-center space-x-2 sm:space-x-4">
                   {emojis.map(({ emoji, label }) => (
                     <button
@@ -521,23 +521,25 @@ function App() {
             ) : (
               <div className="space-y-6">
                 <Heart className="w-16 h-16 text-green-400 mx-auto" />
-                <h3 className="text-xl sm:text-2xl font-semibold text-gray-800 mb-4">
+                <h3 className="text-xl sm:text-2xl font-bold text-gray-900 mb-4">
                   Safely stored on blockchain
                 </h3>
-                <p className="text-gray-700 text-sm sm:text-lg leading-relaxed">
+                <p className="text-gray-800 text-sm sm:text-lg leading-relaxed font-medium">
                   {aiResponse}
                 </p>
                 {entries.length > 0 && entries[0].transactionHash && (
-                  <p className="text-xs sm:text-sm text-blue-600 break-all">
+                  <div className="mt-4 bg-blue-50/80 rounded-lg p-3">
+                    <p className="text-xs sm:text-sm text-blue-700 break-all font-medium">
                     <a 
                       href={`https://explorer.kaigan.jsc.dev/tx/${entries[0].transactionHash}`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="hover:text-blue-800 underline"
+                      className="hover:text-blue-900 underline font-semibold"
                     >
                       View on JSC Explorer: {entries[0].transactionHash.slice(0, 10)}...{entries[0].transactionHash.slice(-8)}
                     </a>
-                  </p>
+                    </p>
+                  </div>
                 )}
                 <div className="pt-6">
                   <button
@@ -558,24 +560,24 @@ function App() {
   const renderDiary = () => (
     <div className="flex-1 px-3 sm:px-6 py-6 sm:py-8">
       <div className="max-w-4xl mx-auto">
-        <div className="text-center mb-12">
-          <div className="bg-white/60 rounded-xl p-6 border border-gray-100 inline-block">
+        <div className="text-center mb-8 sm:mb-12">
+          <div className="bg-white/90 backdrop-blur-sm rounded-xl p-4 sm:p-6 border border-white/30 shadow-lg inline-block">
             <BookOpen className="w-12 h-12 text-blue-600 mx-auto mb-4" />
-            <h2 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-4">Your Personal Diary</h2>
-            <p className="text-gray-800 font-medium text-sm sm:text-lg">Your encrypted thoughts and feelings, safely stored on Japan Smart Chain</p>
+            <h2 className="text-xl sm:text-2xl md:text-3xl font-bold text-gray-900 mb-2 sm:mb-4">Your Personal Diary</h2>
+            <p className="text-gray-800 font-medium text-xs sm:text-sm md:text-base">Your encrypted thoughts and feelings, safely stored on Japan Smart Chain</p>
           </div>
         </div>
         
         {!isConnected && (
-          <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-lg p-6 border border-white/20 text-center py-12">
+          <div className="bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg p-4 sm:p-6 border border-white/30 text-center py-8 sm:py-12">
             <BookOpen className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-            <div className="bg-white/60 rounded-xl p-4 border border-gray-100 mb-6">
-              <p className="text-gray-800 font-medium text-sm sm:text-base">Connect your wallet to view your encrypted diary entries</p>
+            <div className="bg-white/80 rounded-xl p-3 sm:p-4 border border-gray-200 mb-4 sm:mb-6">
+              <p className="text-gray-900 font-semibold text-sm sm:text-base">Connect your wallet to view your encrypted diary entries</p>
             </div>
             <button
               onClick={() => setShowWalletModal(true)}
               disabled={isLoading}
-              className="bg-blue-600 text-white px-4 sm:px-6 py-3 rounded-full font-semibold text-sm sm:text-base hover:bg-blue-700 disabled:opacity-50 transition-colors duration-300"
+              className="bg-blue-600 text-white px-4 sm:px-6 py-2 sm:py-3 rounded-full font-semibold text-sm sm:text-base hover:bg-blue-700 disabled:opacity-50 transition-colors duration-300 shadow-lg"
             >
               {isLoading ? 'Connecting...' : 'Connect Wallet'}
             </button>
@@ -583,29 +585,29 @@ function App() {
         )}
         
         {isLoading && (
-          <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-lg p-6 border border-white/20 text-center py-12">
+          <div className="bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg p-4 sm:p-6 border border-white/30 text-center py-8 sm:py-12">
             <LoadingSpinner size="lg" message="Loading your diary entries..." />
           </div>
         )}
 
         {isConnected && entries.length === 0 && (
-          <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-lg p-6 border border-white/20 text-center py-12">
+          <div className="bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg p-4 sm:p-6 border border-white/30 text-center py-8 sm:py-12">
             <BookOpen className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-            <div className="bg-white/60 rounded-xl p-4 border border-gray-100">
-              <p className="text-gray-800 font-medium text-sm sm:text-base">No entries yet. Share your first thought to get started!</p>
+            <div className="bg-white/80 rounded-xl p-3 sm:p-4 border border-gray-200">
+              <p className="text-gray-900 font-semibold text-sm sm:text-base">No entries yet. Share your first thought to get started!</p>
             </div>
           </div>
         )}
         
         {isConnected && entries.length > 0 && !isLoading && (
           <div className="space-y-6">
-          <div className="flex justify-between items-center mb-6">
-            <h3 className="text-xl font-semibold text-gray-800">Your Entries</h3>
+          <div className="flex justify-between items-center mb-4 sm:mb-6 bg-white/80 backdrop-blur-sm rounded-xl p-3 sm:p-4 border border-white/30">
+            <h3 className="text-lg sm:text-xl font-bold text-gray-900">Your Entries</h3>
             {entries.some(entry => entry.encrypted && !decryptedEntries.has(entry.id)) && (
               <button
                 onClick={handleDecryptAll}
                 disabled={isLoading}
-                className="bg-green-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-300 flex items-center space-x-2"
+                className="bg-green-600 text-white px-3 sm:px-4 py-2 rounded-lg font-semibold text-sm hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-300 flex items-center space-x-2 shadow-lg"
               >
                 {isLoading && <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>}
                 <span>View All</span>
@@ -614,9 +616,9 @@ function App() {
           </div>
           
           {entries.map((entry) => (
-            <div key={entry.id} className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-lg p-4 sm:p-6 hover:shadow-xl transition-shadow duration-300 border border-white/20">
+            <div key={entry.id} className="bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg p-4 sm:p-6 hover:shadow-xl transition-shadow duration-300 border border-white/30">
               <div className="flex items-center justify-between mb-4">
-                <div className="text-xs sm:text-sm text-gray-500 font-medium">
+                <div className="text-xs sm:text-sm text-gray-700 font-semibold bg-white/60 px-2 py-1 rounded-lg">
                   {new Date(entry.date).toLocaleDateString('en-US', { 
                     weekday: 'long', 
                     year: 'numeric', 
@@ -649,14 +651,14 @@ function App() {
                   )}
                 </div>
               </div>
-              <div className="bg-white/60 rounded-xl p-3 sm:p-4 border border-gray-100">
+              <div className="bg-white/80 rounded-xl p-3 sm:p-4 border border-gray-200 shadow-sm">
                 {entry.encrypted && !decryptedEntries.has(entry.id) ? (
                   <div className="flex items-center justify-between">
-                    <p className="text-gray-500 italic text-sm sm:text-base">🔒 Encrypted content - click View to decrypt</p>
+                    <p className="text-gray-700 italic text-sm sm:text-base font-medium">🔒 Encrypted content - click View to decrypt</p>
                     <button
                       onClick={() => handleDecryptEntry(entry.id)}
                       disabled={isDecrypting(entry.id)}
-                      className="bg-blue-600 text-white px-3 py-1 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-300 flex items-center space-x-1"
+                      className="bg-blue-600 text-white px-3 py-1 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-300 flex items-center space-x-1 shadow-md"
                     >
                       {isDecrypting(entry.id) && <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white"></div>}
                       <span>View</span>
@@ -664,7 +666,7 @@ function App() {
                   </div>
                 ) : (
                   <div>
-                    <p className="text-gray-800 leading-relaxed text-sm sm:text-base font-medium">{entry.content}</p>
+                    <p className="text-gray-900 leading-relaxed text-sm sm:text-base font-medium">{entry.content}</p>
                     {decryptedEntries.has(entry.id) && (
                       <div className="mt-2 text-xs text-green-600 flex items-center space-x-1">
                         <span>🔓</span>
@@ -675,12 +677,12 @@ function App() {
                 )}
               </div>
               {entry.transactionHash && (
-                <div className="mt-3 text-center">
+                <div className="mt-3 text-center bg-blue-50/80 rounded-lg p-2">
                   <a 
                     href={`https://explorer.kaigan.jsc.dev/tx/${entry.transactionHash}`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-blue-600 hover:text-blue-800 underline text-xs break-all"
+                    className="text-blue-700 hover:text-blue-900 underline text-xs break-all font-medium"
                   >
                     View on JSC Explorer: {entry.transactionHash.slice(0, 10)}...{entry.transactionHash.slice(-8)}
                   </a>
@@ -697,7 +699,9 @@ function App() {
   const renderAnalytics = () => (
     <div className="flex-1 px-3 sm:px-6 py-6 sm:py-8">
       <div className="max-w-6xl mx-auto">
-        <GlobalHeatMap />
+        <div className="bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg p-4 sm:p-6 border border-white/30">
+          <GlobalHeatMap />
+        </div>
       </div>
     </div>
   );
@@ -791,19 +795,19 @@ function App() {
         {!isConnected && currentView === 'home' && isFirstVisit && (
           <div className="relative mb-6">
             <div className="absolute top-0 right-3 sm:right-6 z-40">
-              <div className="relative bg-white rounded-3xl shadow-xl p-3 sm:p-4 w-64 sm:w-72 border-2 border-blue-200">
+              <div className="relative bg-white/95 backdrop-blur-sm rounded-3xl shadow-xl p-3 sm:p-4 w-64 sm:w-72 border-2 border-blue-200">
                 {/* Thought bubble tail pointing up to sign in button */}
                 <div className="absolute -top-4 right-6 sm:right-8 w-0 h-0 border-l-8 border-r-8 border-b-8 border-l-transparent border-r-transparent border-b-white"></div>
                 <div className="absolute -top-5 right-6 sm:right-8 w-0 h-0 border-l-8 border-r-8 border-b-8 border-l-transparent border-r-transparent border-b-blue-200"></div>
                 
                 <div className="text-center">
-                  <p className="text-blue-800 text-xs font-medium mb-2 sm:mb-3">
+                  <p className="text-blue-900 text-xs font-semibold mb-2 sm:mb-3">
                     Connect your wallet to securely encrypt and store your thoughts on Japan Smart Chain
                   </p>
                   <button
                     onClick={() => setShowWalletModal(true)}
                     disabled={isLoading}
-                    className="bg-blue-600 text-white px-3 py-2 rounded-full text-xs font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors duration-300 w-full sm:w-auto"
+                    className="bg-blue-600 text-white px-3 py-2 rounded-full text-xs font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors duration-300 w-full sm:w-auto shadow-lg"
                   >
                     {isLoading ? 'Connecting...' : 'Connect Wallet'}
                   </button>
@@ -823,10 +827,10 @@ function App() {
       {/* Footer */}
       <footer className="bg-gray-900 text-white py-8">
         <div className="max-w-6xl mx-auto px-3 sm:px-6 text-center">
-          <p className="text-gray-400 mb-2 text-sm sm:text-base">
+          <p className="text-gray-300 mb-2 text-sm sm:text-base font-medium">
             Your thoughts matter. Your feelings are valid. You are not alone.
           </p>
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-gray-400 font-medium">
             The World's Diary is Encrypted on Japan Smart Chain • AI-powered Analytics
           </p>
         </div>

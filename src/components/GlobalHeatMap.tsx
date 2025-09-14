@@ -78,21 +78,21 @@ export const GlobalHeatMap: React.FC = () => {
     <div className="space-y-6">
       {/* Header */}
       <div className="text-center mb-6">
-        <div className="bg-white/60 rounded-xl p-6 border border-gray-100 inline-block">
+        <div className="bg-white/90 backdrop-blur-sm rounded-xl p-4 sm:p-6 border border-white/30 shadow-lg inline-block">
           <Globe className="w-12 h-12 text-blue-600 mx-auto mb-4" />
-          <h2 className="text-3xl font-bold text-gray-800 mb-2">Global Mental Health Heat Map</h2>
-          <p className="text-gray-800 font-medium">Real-time emotional landscape of humanity</p>
+          <h2 className="text-2xl sm:text-3xl font-bold text-gray-900 mb-2">Global Mental Health Heat Map</h2>
+          <p className="text-gray-800 font-semibold text-sm sm:text-base">Real-time emotional landscape of humanity</p>
         </div>
       </div>
 
       {/* Date Selector */}
-      <div className="bg-white rounded-2xl shadow-lg p-4 sm:p-6">
+      <div className="bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg p-4 sm:p-6 border border-white/30">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg sm:text-xl font-semibold text-gray-800 flex items-center">
+          <h3 className="text-lg sm:text-xl font-bold text-gray-900 flex items-center">
             <Calendar className="w-6 h-6 text-purple-500 mr-2" />
             Select Date (UTC)
           </h3>
-          <div className="text-xs sm:text-sm text-gray-500 hidden sm:block">
+          <div className="text-xs sm:text-sm text-gray-700 font-medium hidden sm:block bg-white/60 px-2 py-1 rounded-lg">
             Available: {dateRange.start} to {dateRange.end}
           </div>
         </div>
@@ -103,40 +103,40 @@ export const GlobalHeatMap: React.FC = () => {
           onChange={(e) => setSelectedDate(e.target.value)}
           min={dateRange.start}
           max={dateRange.end}
-          className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white text-gray-900 font-medium"
         />
       </div>
 
       {/* Emotion Legend */}
-      <div className="bg-white rounded-2xl shadow-lg p-4 sm:p-6">
-        <h3 className="text-base sm:text-lg font-semibold text-gray-800 mb-4">Emotion Color Guide</h3>
+      <div className="bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg p-4 sm:p-6 border border-white/30">
+        <h3 className="text-base sm:text-lg font-bold text-gray-900 mb-4">Emotion Color Guide</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="flex items-center space-x-3">
             <div className="w-4 h-4 sm:w-6 sm:h-6 bg-red-500 rounded-full"></div>
-            <span className="text-gray-700 text-sm sm:text-base">Anger</span>
+            <span className="text-gray-900 text-sm sm:text-base font-medium">Anger</span>
           </div>
           <div className="flex items-center space-x-3">
             <div className="w-4 h-4 sm:w-6 sm:h-6 bg-yellow-500 rounded-full"></div>
-            <span className="text-gray-700 text-sm sm:text-base">Calm</span>
+            <span className="text-gray-900 text-sm sm:text-base font-medium">Calm</span>
           </div>
           <div className="flex items-center space-x-3">
             <div className="w-4 h-4 sm:w-6 sm:h-6 bg-green-500 rounded-full"></div>
-            <span className="text-gray-700 text-sm sm:text-base">Harmony</span>
+            <span className="text-gray-900 text-sm sm:text-base font-medium">Harmony</span>
           </div>
           <div className="flex items-center space-x-3">
             <div className="w-4 h-4 sm:w-6 sm:h-6 bg-blue-500 rounded-full"></div>
-            <span className="text-gray-700 text-sm sm:text-base">Happy</span>
+            <span className="text-gray-900 text-sm sm:text-base font-medium">Happy</span>
           </div>
         </div>
-        <p className="text-xs sm:text-sm text-gray-500 mt-3">
+        <p className="text-xs sm:text-sm text-gray-700 mt-3 font-medium bg-white/60 px-2 py-1 rounded-lg inline-block">
           Intensity shown by opacity • Darker = stronger emotion
         </p>
       </div>
 
       {/* Heat Map */}
       {heatMapData && (
-        <div className="bg-white rounded-2xl shadow-lg p-4 sm:p-6">
-          <h3 className="text-lg sm:text-xl font-semibold text-gray-800 mb-6">
+        <div className="bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg p-4 sm:p-6 border border-white/30">
+          <h3 className="text-lg sm:text-xl font-bold text-gray-900 mb-6">
             Global Mood on {new Date(selectedDate).toLocaleDateString('en-US', { 
               weekday: 'long', 
               year: 'numeric', 
@@ -167,8 +167,8 @@ export const GlobalHeatMap: React.FC = () => {
       )}
 
       {/* Historical Records */}
-      <div className="bg-white rounded-2xl shadow-lg p-4 sm:p-6">
-        <h3 className="text-lg sm:text-xl font-semibold text-gray-800 mb-6">Historical Records</h3>
+      <div className="bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg p-4 sm:p-6 border border-white/30">
+        <h3 className="text-lg sm:text-xl font-bold text-gray-900 mb-6">Historical Records</h3>
         
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {historicalRecords.map((record, index) => (
@@ -180,27 +180,27 @@ export const GlobalHeatMap: React.FC = () => {
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center space-x-2">
                   {getRecordIcon(record.type)}
-                  <span className="font-semibold text-gray-800 capitalize text-sm sm:text-base">
+                  <span className="font-bold text-gray-900 capitalize text-sm sm:text-base">
                     {record.type.replace('_', ' ')}
                   </span>
                 </div>
-                <span className="text-xs sm:text-sm text-gray-600">
+                <span className="text-xs sm:text-sm text-gray-700 font-medium bg-white/60 px-2 py-1 rounded">
                   {new Date(record.date).toLocaleDateString()}
                 </span>
               </div>
               
-              <p className="text-gray-700 text-xs sm:text-sm mb-2">{record.description}</p>
+              <p className="text-gray-800 text-xs sm:text-sm mb-2 font-medium">{record.description}</p>
               
               {selectedRecord?.date === record.date && (
-                <div className="mt-4 pt-4 border-t border-gray-200">
+                <div className="mt-4 pt-4 border-t border-gray-200 bg-white/60 rounded-lg p-3">
                   <div className="space-y-3">
                     <div>
-                      <h4 className="font-medium text-gray-800 mb-1 text-sm">Possible Causes:</h4>
-                      <ul className="text-xs sm:text-sm text-gray-600 space-y-1">
+                      <h4 className="font-bold text-gray-900 mb-1 text-sm">Possible Causes:</h4>
+                      <ul className="text-xs sm:text-sm text-gray-800 space-y-1">
                         {record.possibleCauses.map((cause, i) => (
                           <li key={i} className="flex items-start space-x-2">
                             <span className="text-blue-500 mt-0.5">•</span>
-                            <span>{cause}</span>
+                            <span className="font-medium">{cause}</span>
                           </li>
                         ))}
                       </ul>
@@ -208,12 +208,12 @@ export const GlobalHeatMap: React.FC = () => {
                     
                     {record.newsEvents && record.newsEvents.length > 0 && (
                       <div>
-                        <h4 className="font-medium text-gray-800 mb-1 text-sm">Related Events:</h4>
-                        <ul className="text-xs sm:text-sm text-gray-600 space-y-1">
+                        <h4 className="font-bold text-gray-900 mb-1 text-sm">Related Events:</h4>
+                        <ul className="text-xs sm:text-sm text-gray-800 space-y-1">
                           {record.newsEvents.map((event, i) => (
                             <li key={i} className="flex items-start space-x-2">
                               <span className="text-green-500 mt-0.5">•</span>
-                              <span>{event}</span>
+                              <span className="font-medium">{event}</span>
                             </li>
                           ))}
                         </ul>
@@ -228,12 +228,12 @@ export const GlobalHeatMap: React.FC = () => {
       </div>
 
       {/* Privacy Notice */}
-      <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 sm:p-6">
+      <div className="bg-blue-50/95 backdrop-blur-sm border border-blue-200 rounded-2xl p-4 sm:p-6 shadow-lg">
         <div className="flex items-start space-x-3">
           <Info className="w-6 h-6 text-blue-600 mt-0.5 flex-shrink-0" />
           <div>
-            <h4 className="font-semibold text-blue-800 mb-2 text-sm sm:text-base">Privacy Protection Active</h4>
-            <p className="text-blue-700 text-xs sm:text-sm">
+            <h4 className="font-bold text-blue-900 mb-2 text-sm sm:text-base">Privacy Protection Active</h4>
+            <p className="text-blue-800 text-xs sm:text-sm font-medium">
               All personal data including names, locations, ages, email addresses, phone numbers, 
               and social media handles are automatically redacted from display while being preserved 
               in encrypted storage. Only aggregated, anonymized emotional data is used for global analytics.
