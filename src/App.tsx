@@ -232,11 +232,18 @@ function App() {
   };
 
   const handleSync = async () => {
+    setIsLoading(true);
     const result = await syncPendingEntries();
+    setIsLoading(false);
+    
     if (result.success && result.synced > 0) {
-      alert(`Successfully synced ${result.synced} entries to blockchain`);
+      alert(`✅ Successfully synced ${result.synced} entries to blockchain!`);
+    } else if (result.synced === 0 && result.success) {
+      alert('ℹ️ No entries to sync - all entries are already on blockchain');
     } else if (result.error) {
-      alert(`Sync failed: ${result.error}`);
+      alert(`❌ Sync failed: ${result.error}`);
+    } else {
+      alert('ℹ️ No entries found to sync');
     }
   };
 

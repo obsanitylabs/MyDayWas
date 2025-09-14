@@ -174,18 +174,35 @@ export const useEnhancedJSC = () => {
     try {
       const signer = await walletService.getSigner();
       
-      // Create local entry first
+      // Always try to store on blockchain immediately if online
+      if (!isOnline) {
+        return { success: false, error: 'You are offline. Please connect to the internet to submit entries.' };
+      }
+
+      // Encrypt the content first
+      const encryptionResult = await encryptionService.encryptData(content, userAddress, signer);
+      
+      // Store directly on blockchain
+      const transactionHash = await jscService.writeEntry(
+        encryptionResult.encryptedData,
+        sentiment
+      );
+
+      // Create entry with blockchain data
       const localEntry: LocalDiaryEntry = {
         id: Date.now().toString(),
         date: new Date().toISOString().split('T')[0],
         content,
         sentiment,
         encrypted: true,
-        blockchainStored: false,
-        createdAt: Date.now()
+        blockchainStored: true,
+        transactionHash,
+        encryptionData: encryptionResult,
+        createdAt: Date.now(),
+        syncedAt: Date.now()
       };
 
-      // Save to local storage immediately
+      // Save to local storage with blockchain confirmation
       localStorageService.saveEntry(localEntry, userAddress);
       
       // Update UI
@@ -195,46 +212,117 @@ export const useEnhancedJSC = () => {
         content: localEntry.content,
         sentiment: localEntry.sentiment,
         encrypted: localEntry.encrypted,
-        blockchainStored: localEntry.blockchainStored
+        blockchainStored: true,
+        transactionHash
       };
       setEntries(prev => [uiEntry, ...prev]);
 
-      // Try to encrypt and store on blockchain if online
-      if (isOnline) {
-        try {
-          const encryptionResult = await encryptionService.encryptData(content, userAddress, signer);
-          
-          // Store encryption data
-          localStorageService.updateEntry(localEntry.id, {
-            encryptionData: encryptionResult
-          }, userAddress);
-
-          const transactionHash = await jscService.writeEntry(
-            encryptionResult.encryptedData,
-            sentiment
-          );
-
-          // Mark as synced
-          localStorageService.markAsSynced(localEntry.id, userAddress, transactionHash);
-          
-          // Update UI
-          setEntries(prev => prev.map(entry => 
-            entry.id === localEntry.id 
-              ? { ...entry, transactionHash, blockchainStored: true }
-              : entry
-          ));
-
-          await updateBalance();
-        } catch (blockchainError) {
-          console.error('Blockchain storage failed:', blockchainError);
-          // Entry is still saved locally, will sync later
-        }
-      }
+      await updateBalance();
 
       return { success: true };
     } catch (error: any) {
       const errorMessage = error.message || 'Failed to submit entry';
       setError(errorMessage);
+      
+      // If blockchain fails, save locally as pending
+      if (error.message?.includes('user rejected') || error.message?.includes('cancelled')) {
+        return { success: false, error: 'Transaction was cancelled by user' };
+      }
+      
+      // For other errors, save locally and allow manual sync later
+      try {
+        const localEntry: LocalDiaryEntry = {
+          id: Date.now().toString(),
+          date: new Date().toISOString().split('T')[0],
+          content,
+          sentiment,
+          encrypted: true,
+          blockchainStored: false,
+          createdAt: Date.now()
+        };
+
+        localStorageService.saveEntry(localEntry, userAddress);
+        
+        const uiEntry: DiaryEntry = {
+          id: localEntry.id,
+          date: localEntry.date,
+          content: localEntry.content,
+          sentiment: localEntry.sentiment,
+          encrypted: localEntry.encrypted,
+          blockchainStored: false
+        };
+        setEntries(prev => [uiEntry, ...prev]);
+        
+        return { success: true, error: `Entry saved locally. Blockchain error: ${errorMessage}. Use "Sync Now" to retry.` };
+      } catch (localError) {
+        return { success: false, error: errorMessage };
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const syncPendingEntries = async (): Promise<{ success: boolean; synced: number; error?: string }> => {
+    if (!isConnected || !isOnline) {
+      return { success: false, synced: 0, error: 'Not connected or offline' };
+    }
+
+    setIsLoading(true);
+    setError('');
+
+    try {
+      const unsyncedEntries = localStorageService.getUnsyncedEntries(userAddress);
+      let syncedCount = 0;
+      const errors: string[] = [];
+
+      for (const entry of unsyncedEntries) {
+        try {
+          const signer = await walletService.getSigner();
+          
+          // Encrypt if not already encrypted
+          let encryptionData = entry.encryptionData;
+          if (!encryptionData) {
+            encryptionData = await encryptionService.encryptData(entry.content, userAddress, signer);
+            localStorageService.updateEntry(entry.id, { encryptionData }, userAddress);
+          }
+
+          // Submit to blockchain
+          const transactionHash = await jscService.writeEntry(
+            encryptionData.encryptedData,
+            entry.sentiment
+          );
+
+          // Mark as synced
+          localStorageService.markAsSynced(entry.id, userAddress, transactionHash);
+          syncedCount++;
+          
+          // Update UI
+          setEntries(prev => prev.map(uiEntry => 
+            uiEntry.id === entry.id 
+              ? { ...uiEntry, transactionHash, blockchainStored: true }
+              : uiEntry
+          ));
+          
+        } catch (error: any) {
+          console.error(`Failed to sync entry ${entry.id}:`, error);
+          errors.push(`Entry from ${entry.date}: ${error.message}`);
+        }
+      }
+
+      if (syncedCount > 0) {
+        await updateBalance();
+      }
+
+      if (errors.length > 0) {
+        return { 
+          success: syncedCount > 0, 
+          synced: syncedCount, 
+          error: `Synced ${syncedCount} entries. Errors: ${errors.join('; ')}` 
+        };
+      }
+
+      return { success: true, synced: syncedCount };
+    } catch (error: any) {
       return { success: false, error: errorMessage };
     } finally {
       setIsLoading(false);
