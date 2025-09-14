@@ -115,16 +115,29 @@ class EncryptionService {
    * XOR encryption - simple and fast
    */
   private xorEncrypt(data: string, key: string): string {
-    let result = '';
-    for (let i = 0; i < data.length; i++) {
-      const dataChar = data.charCodeAt(i);
-      const keyChar = key.charCodeAt(i % key.length);
-      const encrypted = dataChar ^ keyChar;
-      result += String.fromCharCode(encrypted);
+    try {
+      // Convert string to UTF-8 bytes
+      const encoder = new TextEncoder();
+      const dataBytes = encoder.encode(data);
+      const keyBytes = encoder.encode(key);
+      
+      // XOR encrypt bytes
+      const encrypted = new Uint8Array(dataBytes.length);
+      for (let i = 0; i < dataBytes.length; i++) {
+        encrypted[i] = dataBytes[i] ^ keyBytes[i % keyBytes.length];
+      }
+      
+      // Convert to base64 safely
+      let binary = '';
+      for (let i = 0; i < encrypted.length; i++) {
+        binary += String.fromCharCode(encrypted[i]);
+      }
+      
+      return btoa(binary);
+    } catch (error) {
+      console.error('🔐 XOR encryption failed:', error);
+      throw new Error(`XOR encryption failed: ${error.message}`);
     }
-    
-    // Convert to base64 for safe storage
-    return btoa(result);
   }
 
   /**
@@ -132,20 +145,26 @@ class EncryptionService {
    */
   private xorDecrypt(encryptedData: string, key: string): string {
     try {
-      // Decode from base64
-      const data = atob(encryptedData);
-      
-      let result = '';
-      for (let i = 0; i < data.length; i++) {
-        const dataChar = data.charCodeAt(i);
-        const keyChar = key.charCodeAt(i % key.length);
-        const decrypted = dataChar ^ keyChar;
-        result += String.fromCharCode(decrypted);
+      // Decode from base64 to bytes
+      const binary = atob(encryptedData);
+      const encrypted = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        encrypted[i] = binary.charCodeAt(i);
       }
       
-      return result;
+      // XOR decrypt bytes
+      const keyBytes = new TextEncoder().encode(key);
+      const decrypted = new Uint8Array(encrypted.length);
+      for (let i = 0; i < encrypted.length; i++) {
+        decrypted[i] = encrypted[i] ^ keyBytes[i % keyBytes.length];
+      }
+      
+      // Convert back to UTF-8 string
+      const decoder = new TextDecoder();
+      return decoder.decode(decrypted);
     } catch (error) {
-      throw new Error('Invalid encrypted data format');
+      console.error('🔓 XOR decryption failed:', error);
+      throw new Error(`XOR decryption failed: ${error.message}`);
     }
   }
 
