@@ -23,6 +23,8 @@ export const useEnhancedJSC = () => {
   const [balance, setBalance] = useState<string>('0');
   const [error, setError] = useState<string>('');
   const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [decryptedEntries, setDecryptedEntries] = useState<Set<string>>(new Set());
+  const [isDecrypting, setIsDecrypting] = useState<Set<string>>(new Set());
 
   // Network status monitoring
   useEffect(() => {
@@ -423,5 +425,143 @@ export const useEnhancedJSC = () => {
     getAvailableProviders,
     getUnsyncedCount,
     clearError: () => setError('')
+    decryptEntry,
+    decryptAllEntries,
+    decryptedEntries,
+    isDecrypting: (entryId: string) => isDecrypting.has(entryId)
+  };
+
+  const decryptEntry = async (entryId: string): Promise<{ success: boolean; content?: string; error?: string }> => {
+    if (!isConnected) {
+      return { success: false, error: 'Wallet not connected' };
+    }
+
+    setIsDecrypting(prev => new Set([...prev, entryId]));
+
+    try {
+      const entry = entries.find(e => e.id === entryId);
+      if (!entry) {
+        return { success: false, error: 'Entry not found' };
+      }
+
+      // If already decrypted, return current content
+      if (decryptedEntries.has(entryId)) {
+        return { success: true, content: entry.content };
+      }
+
+      // Get local entry with encryption data
+      const localEntries = localStorageService.getEntries(userAddress);
+      const localEntry = localEntries.find(local => local.id === entryId);
+
+      if (!localEntry?.encryptionData) {
+        return { success: false, error: 'No encryption data found for this entry' };
+      }
+
+      const signer = await walletService.getSigner();
+      
+      // Decrypt the content
+      const decryptedContent = await encryptionService.decryptData(
+        {
+          encryptedData: localEntry.encryptionData.encryptedData,
+          encryptionKey: localEntry.encryptionData.encryptionKey,
+          signature: localEntry.encryptionData.signature
+        },
+        userAddress,
+        signer
+      );
+
+      // Update the entry in state with decrypted content
+      setEntries(prev => prev.map(e => 
+        e.id === entryId 
+          ? { ...e, content: decryptedContent }
+          : e
+      ));
+
+      // Mark as decrypted
+      setDecryptedEntries(prev => new Set([...prev, entryId]));
+
+      return { success: true, content: decryptedContent };
+    } catch (error: any) {
+      console.error('Failed to decrypt entry:', error);
+      return { success: false, error: error.message || 'Decryption failed' };
+    } finally {
+      setIsDecrypting(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(entryId);
+        return newSet;
+      });
+    }
+  };
+
+  const decryptAllEntries = async (): Promise<{ success: boolean; decrypted: number; failed: number; error?: string }> => {
+    if (!isConnected) {
+      return { success: false, decrypted: 0, failed: 0, error: 'Wallet not connected' };
+    }
+
+    const encryptedEntries = entries.filter(entry => 
+      entry.encrypted && !decryptedEntries.has(entry.id)
+    );
+
+    if (encryptedEntries.length === 0) {
+      return { success: true, decrypted: 0, failed: 0 };
+    }
+
+    let decryptedCount = 0;
+    let failedCount = 0;
+
+    // Set all entries as decrypting
+    const entryIds = encryptedEntries.map(e => e.id);
+    setIsDecrypting(prev => new Set([...prev, ...entryIds]));
+
+    try {
+      const signer = await walletService.getSigner();
+      const localEntries = localStorageService.getEntries(userAddress);
+
+      for (const entry of encryptedEntries) {
+        try {
+          const localEntry = localEntries.find(local => local.id === entry.id);
+          
+          if (!localEntry?.encryptionData) {
+            failedCount++;
+            continue;
+          }
+
+          const decryptedContent = await encryptionService.decryptData(
+            {
+              encryptedData: localEntry.encryptionData.encryptedData,
+              encryptionKey: localEntry.encryptionData.encryptionKey,
+              signature: localEntry.encryptionData.signature
+            },
+            userAddress,
+            signer
+          );
+
+          // Update the entry in state
+          setEntries(prev => prev.map(e => 
+            e.id === entry.id 
+              ? { ...e, content: decryptedContent }
+              : e
+          ));
+
+          // Mark as decrypted
+          setDecryptedEntries(prev => new Set([...prev, entry.id]));
+          decryptedCount++;
+        } catch (error) {
+          console.error(`Failed to decrypt entry ${entry.id}:`, error);
+          failedCount++;
+        }
+      }
+
+      return { success: true, decrypted: decryptedCount, failed: failedCount };
+    } catch (error: any) {
+      return { success: false, decrypted: decryptedCount, failed: failedCount, error: error.message };
+    } finally {
+      // Remove all entries from decrypting state
+      setIsDecrypting(prev => {
+        const newSet = new Set(prev);
+        entryIds.forEach(id => newSet.delete(id));
+        return newSet;
+      });
+    }
   };
 };
