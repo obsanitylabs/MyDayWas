@@ -527,9 +527,16 @@ function App() {
                 <p className="text-gray-700 text-sm sm:text-lg leading-relaxed">
                   {aiResponse}
                 </p>
-                {userAddress && (
-                  <p className="text-xs sm:text-sm text-gray-500 break-all">
-                    JSC Address: {userAddress.slice(0, 6)}...{userAddress.slice(-4)} | Balance: {parseFloat(balance).toFixed(4)} JETH
+                {entries.length > 0 && entries[0].transactionHash && (
+                  <p className="text-xs sm:text-sm text-blue-600 break-all">
+                    <a 
+                      href={`https://explorer.kaigan.jsc.dev/tx/${entries[0].transactionHash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="hover:text-blue-800 underline"
+                    >
+                      View on JSC Explorer: {entries[0].transactionHash.slice(0, 10)}...{entries[0].transactionHash.slice(-8)}
+                    </a>
                   </p>
                 )}
                 <div className="pt-6">
