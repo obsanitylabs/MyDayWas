@@ -231,6 +231,9 @@ export const useEnhancedJSC = () => {
       
       // For other errors, save locally and allow manual sync later
       try {
+        const signer = await walletService.getSigner();
+        const encryptionResult = await encryptionService.encryptData(content, userAddress, signer);
+        
         const localEntry: LocalDiaryEntry = {
           id: Date.now().toString(),
           date: new Date().toISOString().split('T')[0],
@@ -238,7 +241,8 @@ export const useEnhancedJSC = () => {
           sentiment,
           encrypted: true,
           blockchainStored: false,
-          createdAt: Date.now()
+          createdAt: Date.now(),
+          encryptionData: encryptionResult
         };
 
         localStorageService.saveEntry(localEntry, userAddress);
@@ -272,6 +276,11 @@ export const useEnhancedJSC = () => {
 
     try {
       const unsyncedEntries = localStorageService.getUnsyncedEntries(userAddress);
+      
+      if (unsyncedEntries.length === 0) {
+        return { success: true, synced: 0 };
+      }
+      
       let syncedCount = 0;
       const errors: string[] = [];
 
@@ -323,6 +332,8 @@ export const useEnhancedJSC = () => {
 
       return { success: true, synced: syncedCount };
     } catch (error: any) {
+      const errorMessage = error.message || 'Failed to sync entries';
+      setError(errorMessage);
       return { success: false, error: errorMessage };
     } finally {
       setIsLoading(false);

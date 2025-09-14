@@ -294,12 +294,16 @@ export class JapanSmartChainService {
       console.error('Failed to write entry to JSC:', error);
       
       // Provide more user-friendly error messages
-      if (error.message?.includes('user rejected')) {
+      if (error.message?.includes('user rejected') || error.code === 4001) {
         throw new Error('Transaction was cancelled by user');
-      } else if (error.message?.includes('insufficient funds')) {
+      } else if (error.message?.includes('insufficient funds') || error.code === -32000) {
         throw new Error('Insufficient JETH balance for transaction');
       } else if (error.message?.includes('execution reverted')) {
         throw new Error('Transaction failed: ' + (error.reason || 'Contract execution reverted'));
+      } else if (error.code === -32603) {
+        throw new Error('Network error: Please check your connection and try again');
+      } else if (error.code === 4100) {
+        throw new Error('Please connect to Japan Smart Chain network');
       } else {
         throw new Error('Failed to submit entry: ' + (error.message || 'Unknown error'));
       }

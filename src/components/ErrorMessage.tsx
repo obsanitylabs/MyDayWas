@@ -5,12 +5,14 @@ interface ErrorMessageProps {
   message: string;
   onDismiss?: () => void;
   type?: 'error' | 'warning' | 'info';
+  className?: string;
 }
 
 export const ErrorMessage: React.FC<ErrorMessageProps> = ({ 
   message, 
   onDismiss, 
-  type = 'error' 
+  type = 'error',
+  className = ''
 }) => {
   const typeStyles = {
     error: 'bg-red-50 border-red-200 text-red-700',
@@ -25,7 +27,7 @@ export const ErrorMessage: React.FC<ErrorMessageProps> = ({
   };
 
   return (
-    <div className={`p-4 border rounded-lg ${typeStyles[type]} flex items-start space-x-3`}>
+    <div className={`p-4 border rounded-lg ${typeStyles[type]} flex items-start space-x-3 ${className}`}>
       <AlertCircle className={`w-5 h-5 mt-0.5 flex-shrink-0 ${iconColors[type]}`} />
       <div className="flex-1">
         <p className="text-sm font-medium">{message}</p>

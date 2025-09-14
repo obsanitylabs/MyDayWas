@@ -174,7 +174,33 @@ function App() {
     const result = await submitEntry(entryContent, sentiment);
     
     if (!result.success) {
-      alert(result.error || 'Failed to submit entry. Please try again.');
+      // Show error but don't reset form if entry was saved locally
+      if (result.error?.includes('saved locally')) {
+        // Entry was saved locally, continue with success flow but show warning
+        console.warn('Entry saved locally:', result.error);
+      } else {
+        alert(result.error || 'Failed to submit entry. Please try again.');
+        setHasSubmitted(false);
+        return;
+      }
+    }
+
+    // Get similar users count
+    const similarUsersCount = await getSimilarUsersCount(sentiment);
+
+    // Generate empathetic AI response
+    const responses = [
+      `Thank you for sharing your thoughts with such honesty. Your feelings are valid, and it takes courage to reflect on them. You are not alone! ${similarUsersCount.toLocaleString()} others have felt the same way in the past 24 hours. Remember, tomorrow brings new possibilities for growth and healing.`,
+      `Your words resonate with depth and authenticity. It's beautiful how you've taken a moment to connect with yourself. You are not alone! ${similarUsersCount.toLocaleString()} others have shared similar feelings in the past 24 hours. Your emotional journey matters, and sharing it helps create a more understanding world.`,
+      `What a gift it is to witness your vulnerability and self-reflection. Your feelings deserve acknowledgment and care. You are not alone! ${similarUsersCount.toLocaleString()} others have experienced similar emotions in the past 24 hours. Thank you for contributing to humanity's collective emotional tapestry.`
+    ];
+    
+    const randomResponse = responses[Math.floor(Math.random() * responses.length)];
+    
+    setTimeout(() => {
+      setAiResponse(randomResponse);
+    }, 1500);
+  };
       setHasSubmitted(false);
       return;
     }
@@ -232,9 +258,7 @@ function App() {
   };
 
   const handleSync = async () => {
-    setIsLoading(true);
     const result = await syncPendingEntries();
-    setIsLoading(false);
     
     if (result.success && result.synced > 0) {
       alert(`✅ Successfully synced ${result.synced} entries to blockchain!`);
@@ -343,7 +367,14 @@ function App() {
         {isConnected && getUnsyncedCount() > 0 && isOnline && (
           <div className="bg-blue-50 border border-blue-200 rounded-2xl p-3 sm:p-4 mb-6 flex flex-col sm:flex-row items-center justify-between space-y-2 sm:space-y-0">
             <p className="text-blue-800 text-xs sm:text-sm text-center sm:text-left">{getUnsyncedCount()} entries pending blockchain sync</p>
-            <button onClick={handleSync} className="text-blue-600 hover:text-blue-700 text-sm font-medium">Sync Now</button>
+            <button 
+              onClick={handleSync} 
+              disabled={isLoading}
+              className="text-blue-600 hover:text-blue-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-1"
+            >
+              {isLoading && <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-blue-600"></div>}
+              <span>Sync Now</span>
+            </button>
           </div>
         )}
 
@@ -414,7 +445,7 @@ function App() {
                 disabled={(!userInput.trim() && selectedEmojis.length === 0) || isLoading}
                 className="w-full bg-gradient-to-r from-blue-600 to-purple-600 text-white py-3 sm:py-4 px-6 sm:px-8 rounded-2xl font-semibold text-sm sm:text-lg hover:from-blue-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 shadow-lg hover:shadow-xl flex items-center justify-center space-x-2"
               >
-                {isLoading && <LoadingSpinner size="sm" />}
+                {isLoading && <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>}
                 <span>
                   {isLoading ? 'Encrypting & Storing...' : 'Share My Thoughts'}
                 </span>
@@ -464,7 +495,7 @@ function App() {
                     onClick={resetForm}
                     className="bg-blue-600 text-white px-6 sm:px-8 py-3 rounded-full font-semibold text-sm sm:text-base hover:bg-blue-700 transition-colors duration-300 shadow-lg"
                   >
-                    Share Again Tomorrow
+                    Write Another Entry
                   </button>
                 </div>
               </div>
