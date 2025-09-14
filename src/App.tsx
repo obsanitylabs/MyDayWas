@@ -66,7 +66,7 @@ function App() {
       await window.ethereum.request({
         method: 'wallet_addEthereumChain',
         params: [{
-          chainId: '0x508A28', // 5278000 in hex
+          chainId: '5278000', // 5278000 in hex
           chainName: 'JSC Kaigan Testnet',
           nativeCurrency: {
             name: 'JETH',
