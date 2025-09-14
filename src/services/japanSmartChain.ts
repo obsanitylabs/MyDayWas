@@ -7,7 +7,7 @@ import { ethers } from 'ethers';
 
 // Japan Smart Chain Configuration
 const JSC_CONFIG = {
-  chainId: '0x508A28', // 5278000 in decimal (JSC Kaigan Testnet)
+  chainId: '0x5088B0', // 5278000 in decimal (JSC Kaigan Testnet)
   chainName: 'JSC Kaigan Testnet',
   nativeCurrency: {
     name: 'JETH',
