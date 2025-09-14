@@ -407,6 +407,10 @@ export const useEnhancedJSC = () => {
     return localStorageService.getUnsyncedEntries(userAddress).length;
   };
 
+  const clearError = () => {
+    setError('');
+  };
+
   const decryptEntry = async (entryId: string): Promise<{ success: boolean; content?: string; error?: string }> => {
     if (!isConnected) {
       return { success: false, error: 'Wallet not connected' };
