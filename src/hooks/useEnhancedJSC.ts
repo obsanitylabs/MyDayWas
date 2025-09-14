@@ -407,30 +407,6 @@ export const useEnhancedJSC = () => {
     return localStorageService.getUnsyncedEntries(userAddress).length;
   };
 
-  return {
-    isConnected,
-    isLoading,
-    entries,
-    userAddress,
-    networkInfo,
-    balance,
-    error,
-    isOnline,
-    connectWallet,
-    handleDisconnect,
-    submitEntry,
-    loadEntries,
-    syncPendingEntries,
-    getGlobalSentiment,
-    getAvailableProviders,
-    getUnsyncedCount,
-    clearError: () => setError('')
-    decryptEntry,
-    decryptAllEntries,
-    decryptedEntries,
-    isDecrypting: (entryId: string) => isDecrypting.has(entryId)
-  };
-
   const decryptEntry = async (entryId: string): Promise<{ success: boolean; content?: string; error?: string }> => {
     if (!isConnected) {
       return { success: false, error: 'Wallet not connected' };
@@ -563,6 +539,30 @@ export const useEnhancedJSC = () => {
         return newSet;
       });
     }
+  };
+
+  return {
+    isConnected,
+    isLoading,
+    entries,
+    userAddress,
+    networkInfo,
+    balance,
+    error,
+    isOnline,
+    connectWallet,
+    handleDisconnect,
+    submitEntry,
+    loadEntries,
+    syncPendingEntries,
+    getGlobalSentiment,
+    getAvailableProviders,
+    getUnsyncedCount,
+    clearError,
+    decryptEntry,
+    decryptAllEntries,
+    decryptedEntries,
+    isDecrypting: (entryId: string) => isDecrypting.has(entryId)
   };
 
   const decryptEntry = async (entryId: string): Promise<{ success: boolean; content?: string; error?: string }> => {
