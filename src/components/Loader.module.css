@@ -1,0 +1,49 @@
+.loader {
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(ellipse at center, #10121f 0%, #05060b 70%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 99999;
+}
+
+.content {
+  text-align: center;
+  width: 300px;
+  max-width: 85vw;
+}
+
+.logo {
+  margin-bottom: 20px;
+}
+
+.line {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 20px;
+  color: var(--text-muted);
+  margin-bottom: 32px;
+}
+
+.progressBar {
+  width: 100%;
+  height: 2px;
+  background-color: rgba(245, 177, 76, 0.2);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progressFill {
+  height: 100%;
+  background-color: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+  transition: width 0.2s ease-out;
+}
+
+.progressText {
+  margin-top: 16px;
+  font-size: 14px;
+  color: var(--text-muted);
+  font-weight: 500;
+}

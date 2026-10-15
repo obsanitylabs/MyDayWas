@@ -1,0 +1,129 @@
+.section {
+  position: relative;
+}
+
+.sticky {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  width: 100%;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.canvasWrapper {
+  position: absolute;
+  inset: 20px;
+  border-radius: var(--radius-2xl);
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  box-shadow:
+    0 0 80px rgba(var(--accent-rgb), 0.08),
+    inset 0 0 60px rgba(0, 0, 0, 0.3);
+  background: #0b0d18;
+}
+
+.canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.overlay {
+  position: absolute;
+  inset: 20px;
+  background: linear-gradient(
+    to bottom,
+    rgba(5, 6, 11, 0.25) 0%,
+    rgba(5, 6, 11, 0.1) 35%,
+    rgba(5, 6, 11, 0.35) 65%,
+    rgba(5, 6, 11, 0.8) 100%
+  );
+  border-radius: var(--radius-2xl);
+  z-index: 1;
+  pointer-events: none;
+}
+
+.caption {
+  position: absolute;
+  left: 50%;
+  bottom: 12vh;
+  z-index: 2;
+  width: min(880px, 88%);
+  text-align: center;
+  pointer-events: none;
+  will-change: opacity, transform;
+}
+
+.captionTop {
+  bottom: auto;
+  top: 16vh;
+}
+
+.captionText {
+  font-size: clamp(26px, 4vw, 48px);
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  text-shadow: 0 2px 30px rgba(0, 0, 0, 0.6);
+}
+
+.quote {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: clamp(32px, 5.2vw, 64px);
+  line-height: 1.1;
+  color: var(--accent-soft);
+  text-shadow: 0 2px 30px rgba(0, 0, 0, 0.7), 0 0 40px rgba(var(--accent-rgb), 0.35);
+}
+
+.captionSub {
+  margin-top: 16px;
+  font-size: clamp(15px, 1.8vw, 19px);
+  color: rgba(255, 255, 255, 0.85);
+  text-shadow: 0 2px 20px rgba(0, 0, 0, 0.7);
+}
+
+.progressRail {
+  position: absolute;
+  right: 44px;
+  top: 50%;
+  height: 120px;
+  width: 2px;
+  margin-top: -60px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 2px;
+  z-index: 3;
+  overflow: hidden;
+}
+
+.progressFill {
+  width: 100%;
+  height: 100%;
+  background: var(--accent);
+  transform-origin: top;
+  box-shadow: 0 0 10px var(--accent);
+}
+
+@media (max-width: 768px) {
+  .sticky {
+    padding: 12px;
+  }
+
+  .canvasWrapper,
+  .overlay {
+    inset: 12px;
+    border-radius: var(--radius-xl);
+  }
+
+  .caption {
+    bottom: 10vh;
+  }
+
+  .progressRail {
+    right: 26px;
+  }
+}

@@ -1,0 +1,30 @@
+.logo {
+  display: inline-flex;
+  align-items: center;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--text-primary);
+  line-height: 1;
+}
+
+.day {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-weight: 400;
+  color: var(--accent);
+  font-size: 1.15em;
+  margin: 0 1px;
+}
+
+.orb {
+  width: 0.55em;
+  height: 0.55em;
+  border-radius: 50%;
+  margin-right: 0.4em;
+  background: radial-gradient(circle, #fff4dd 0%, var(--accent) 55%, rgba(245, 177, 76, 0) 100%);
+  box-shadow: 0 0 14px rgba(245, 177, 76, 0.8);
+}
+
+.sm { font-size: 20px; }
+.md { font-size: 26px; }
+.lg { font-size: 56px; }
