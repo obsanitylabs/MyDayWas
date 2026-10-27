@@ -1,1 +1,1 @@
-export const APP_URL = 'https://app.mydaywas.com/'
+export const APP_URL = 'https://obsanitylabs.github.io/MyDayWas/recovered/'
