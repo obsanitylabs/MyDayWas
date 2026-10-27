@@ -1,0 +1,17 @@
+{
+  "name": "mydaywas-relayer",
+  "private": true,
+  "version": "1.0.0-m4",
+  "type": "module",
+  "description": "MyDayWas aggregate-signal relayer: k>=100 k-anonymity, server-enforced T+24h, below-k suppression, CISO R9 service-layer controls (OBS-83).",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "start": "node --experimental-transform-types --no-warnings src/server.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.0"
+  }
+}

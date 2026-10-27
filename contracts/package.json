@@ -1,0 +1,13 @@
+{
+  "name": "mydaywas-contracts",
+  "private": true,
+  "version": "1.0.0-m4",
+  "type": "module",
+  "description": "MyDayWas aggregate-signals contract (M4, OBS-83). Compile check only; deployment is gated on Chief Auditor review.",
+  "scripts": {
+    "compile": "node compile.mjs"
+  },
+  "devDependencies": {
+    "solc": "0.8.24"
+  }
+}

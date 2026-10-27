@@ -2,6 +2,20 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Diary, type DecryptedEntry, type Sentiment } from "../app/api";
 import { connectAccounts, getInjectedProvider } from "../auth/wallet";
 import { log } from "../log";
+import { getSignalsOptIn, revokeSignals, setSignalsOptIn } from "../signals/settings";
+import { SIGNAL_DISCLOSURE } from "../signals/disclosure";
+import { buildSignalPayload, getContributorToken, httpTransport, rotateContributorToken } from "../signals/submit";
+import { isFollowUpDisabled, markPrompted, onDeviceFollowUp, setFollowUpDisabled, shouldPromptFor, skipPrompt } from "../followup/prompt";
+import { getReferralPseudonym, rotateReferralPseudonym } from "../referral/pseudonym";
+import {
+  REFERRAL_FIELDS,
+  SPECIAL_CATEGORY_FIELD,
+  getReferralConsent,
+  revokeReferral,
+  setReferralConsent,
+  type ReferralConsent,
+} from "../referral/consent";
+import { buildReferralItem, clearQueue, enqueue, purge } from "../referral/queue";
 
 const SENTIMENTS: Sentiment[] = ["POSITIVE", "NEGATIVE", "NEUTRAL"];
 
@@ -33,6 +47,16 @@ export function App(): React.ReactElement {
   const [oldPw, setOldPw] = useState("");
   const [newPw, setNewPw] = useState("");
   const bootRef = useRef(false);
+
+  // M4: anonymous signals, follow-up prompt, referral stub
+  const storage = globalThis.localStorage;
+  const [signalsOn, setSignalsOn] = useState(() => getSignalsOptIn(storage).enabled);
+  const [signalStatus, setSignalStatus] = useState<string>("");
+  const [followUp, setFollowUp] = useState<{ id: string; sentiment: Sentiment } | null>(null);
+  const [followUpDisabled, setFollowUpDisabledState] = useState(() => isFollowUpDisabled(storage));
+  const [followUpText, setFollowUpText] = useState("");
+  const [refConsent, setRefConsentState] = useState<ReferralConsent | null>(() => getReferralConsent(storage));
+  const [refStatus, setRefStatus] = useState<string>("");
 
   const refresh = useCallback(async (d: Diary) => {
     setEntries(await d.listEntries());
@@ -100,14 +124,95 @@ export function App(): React.ReactElement {
     if (!diary || !text.trim()) return;
     setBusy(true);
     try {
-      await diary.addEntry(text, sentiment);
+      const saved = await diary.addEntry(text, sentiment);
       setText("");
       await refresh(diary);
       setStatus(online ? "saved locally; will sync" : "saved locally (offline)");
+      // M4: one lightweight follow-up prompt per entry (skippable/disableable,
+      // on-device only) — never when the feature is disabled.
+      if (shouldPromptFor(storage, saved.id)) {
+        markPrompted(storage, saved.id);
+        setFollowUp({ id: saved.id, sentiment: saved.sentiment });
+      }
     } catch (e) {
       setErr(String(e));
     } finally {
       setBusy(false);
+    }
+  };
+
+  // ---- M4: anonymous signals ----
+  const RELAYER_URL = import.meta.env.VITE_RELAYER_URL as string | undefined;
+  const toggleSignals = async (on: boolean) => {
+    setSignalsOptIn(storage, on);
+    setSignalsOn(on);
+    if (!on) {
+      rotateContributorToken(storage);
+      setSignalStatus("Off — sharing stopped and your signal pseudonym was rotated.");
+    } else {
+      setSignalStatus("");
+    }
+  };
+  const shareSignal = async () => {
+    if (!diary || !signalsOn) return;
+    setBusy(true);
+    try {
+      const payload = buildSignalPayload(sentiment, getContributorToken(storage));
+      if (RELAYER_URL) {
+        await httpTransport(RELAYER_URL).submit(payload);
+        setSignalStatus(`Sent — only "${payload.sentiment}" and today's UTC day.`);
+      } else {
+        // Honest staging behavior: never pretend a send happened.
+        setSignalStatus("Prepared, but not sent: no relayer URL is configured on this staging build.");
+      }
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // ---- M4: follow-up prompt ----
+  const answerFollowUp = async () => {
+    if (!diary || !followUp || !followUpText.trim()) return;
+    setBusy(true);
+    try {
+      await diary.addEntry(followUpText, followUp.sentiment);
+      setFollowUp(null);
+      setFollowUpText("");
+      await refresh(diary);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const disableFollowUps = () => {
+    setFollowUpDisabled(storage, true);
+    setFollowUpDisabledState(true);
+    setFollowUp(null);
+    setFollowUpText("");
+  };
+
+  // ---- M4: referral stub ----
+  const updateRefConsent = (patch: Partial<ReferralConsent>) => {
+    const current: ReferralConsent =
+      refConsent ??
+      {
+        v: 1,
+        referralEnabled: false,
+        fields: { moodSummary: false, topicTag: false },
+        specialCategory: { [SPECIAL_CATEGORY_FIELD]: false },
+        specialCategoryTick: false,
+        grantedDay: 0,
+      };
+    const next = { ...current, ...patch } as ReferralConsent;
+    try {
+      setReferralConsent(storage, next);
+      setRefConsentState(getReferralConsent(storage));
+      setRefStatus("");
+    } catch (e) {
+      setErr(String(e));
     }
   };
 
@@ -165,7 +270,7 @@ export function App(): React.ReactElement {
     <div className="app">
       <header className="site">
         <h1>MyDayWas</h1>
-        <span className="tag">private diary · v1 (M3 staging)</span>
+        <span className="tag">private diary · v1 (M4 staging)</span>
       </header>
 
       <div className="card">
@@ -206,6 +311,138 @@ export function App(): React.ReactElement {
               <span className="spacer" />
               <button className="primary" onClick={add} disabled={busy || !text.trim()}>Save entry</button>
             </div>
+          </div>
+
+          {followUp && !followUpDisabled && (
+            <div className="card followup">
+              <h2>One quick follow-up</h2>
+              <p className="hint">{onDeviceFollowUp({ sentiment: followUp.sentiment }).question}</p>
+              <textarea
+                value={followUpText}
+                onChange={(e) => setFollowUpText(e.target.value)}
+                placeholder={onDeviceFollowUp({ sentiment: followUp.sentiment }).placeholder}
+              />
+              <p className="hint">This never leaves your device unless you save it as an entry. Inference is on-device only.</p>
+              <div className="row">
+                <button className="primary" onClick={answerFollowUp} disabled={busy || !followUpText.trim()}>
+                  Save as entry
+                </button>
+                <button onClick={() => { skipPrompt(storage, followUp.id); setFollowUp(null); setFollowUpText(""); }}>
+                  Skip
+                </button>
+                <span className="spacer" />
+                <button onClick={disableFollowUps}>Don't ask again</button>
+              </div>
+            </div>
+          )}
+
+          <div className="card signals">
+            <h2>Anonymous community signals</h2>
+            <p className="hint" style={{ whiteSpace: "pre-wrap" }}>{SIGNAL_DISCLOSURE}</p>
+            <div className="row">
+              <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <input
+                  type="checkbox"
+                  checked={signalsOn}
+                  onChange={(e) => void toggleSignals(e.target.checked)}
+                />
+                Share how my day felt (anonymous)
+              </label>
+              <span className="spacer" />
+              <button onClick={shareSignal} disabled={busy || !signalsOn}>
+                Send today's signal
+              </button>
+              {signalsOn && <button className="danger" onClick={() => void toggleSignals(false)}>Turn off</button>}
+            </div>
+            {signalStatus && <p className="hint">{signalStatus}</p>}
+          </div>
+
+          <div className="card referral">
+            <h2>Partner referral (preview stub)</h2>
+            <p className="hint">
+              Curated partners only; nothing is sent anywhere in this preview. A separate
+              referral pseudonym is used — never your wallet. Consent is per field, and the
+              health/mood field needs its own explicit tick. Queued items are purged within
+              30 days, and revocation clears the queue and rotates the pseudonym.
+            </p>
+            <div className="row">
+              <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <input
+                  type="checkbox"
+                  checked={refConsent?.referralEnabled ?? false}
+                  onChange={(e) => updateRefConsent({ referralEnabled: e.target.checked })}
+                />
+                Let a partner reach me
+              </label>
+            </div>
+            {refConsent?.referralEnabled && (
+              <>
+                <div className="row">
+                  {REFERRAL_FIELDS.map((f) => (
+                    <label key={f} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <input
+                        type="checkbox"
+                        checked={refConsent?.fields[f] ?? false}
+                        onChange={(e) => updateRefConsent({ fields: { ...refConsent?.fields, [f]: e.target.checked } })}
+                      />
+                      {f === "moodSummary" ? "mood summary" : "topic tag"}
+                    </label>
+                  ))}
+                </div>
+                <div className="row">
+                  <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={refConsent?.specialCategory[SPECIAL_CATEGORY_FIELD] ?? false}
+                      onChange={(e) =>
+                        updateRefConsent({
+                          specialCategory: { [SPECIAL_CATEGORY_FIELD]: e.target.checked },
+                          specialCategoryTick: e.target.checked,
+                        })
+                      }
+                    />
+                    health/mood note (special category)
+                  </label>
+                </div>
+                <p className="hint">
+                  Referral pseudonym: <code>{getReferralPseudonym(storage).slice(0, 12)}…</code>{" "}
+                  (separate from your wallet)
+                </p>
+              </>
+            )}
+            <div className="row">
+              <button
+                onClick={() => {
+                  const c = getReferralConsent(storage);
+                  if (c?.referralEnabled) {
+                    const item = buildReferralItem(c, getReferralPseudonym(storage), { sentiment });
+                    enqueue(storage, item);
+                    setRefStatus("Queued (stub) — nothing is delivered; the queue purges within 30 days.");
+                  } else {
+                    setRefStatus("Enable the referral consent first.");
+                  }
+                }}
+              >
+                Queue referral (stub)
+              </button>
+              <button onClick={() => { const n = purge(storage); setRefStatus(`Purged ${n} expired queue item(s).`); }}>
+                Purge queue now
+              </button>
+              <span className="spacer" />
+              <button
+                className="danger"
+                onClick={() => {
+                  revokeReferral(storage);
+                  clearQueue(storage);
+                  rotateReferralPseudonym(storage);
+                  setRefConsentState(getReferralConsent(storage));
+                  setRefStatus("Referral consent revoked: queue cleared, pseudonym rotated.");
+                }}
+              >
+                Revoke referral consent
+              </button>
+            </div>
+            {refStatus && <p className="hint">{refStatus}</p>}
           </div>
 
           <div className="card">
