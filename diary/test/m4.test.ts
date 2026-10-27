@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import { getSignalsOptIn, revokeSignals, setSignalsOptIn } from "../src/signals/settings";
 import { buildSignalPayload, getContributorToken, rotateContributorToken } from "../src/signals/submit";
-import { SIGNAL_DISCLOSURE } from "../src/signals/disclosure";
+import { SIGNAL_DISCLOSURE, SIGNALS_TITLE, SIGNALS_TITLE_HINT } from "../src/signals/disclosure";
 import { isFollowUpDisabled, markPrompted, onDeviceFollowUp, setFollowUpDisabled, shouldPromptFor, skipPrompt } from "../src/followup/prompt";
 import { getReferralPseudonym, rotateReferralPseudonym } from "../src/referral/pseudonym";
 import {
@@ -70,6 +70,27 @@ describe("anonymous signals opt-in (default-off, revocable, separate)", () => {
     expect(SIGNAL_DISCLOSURE).toMatch(/not shared/i);
     expect(SIGNAL_DISCLOSURE).toMatch(/at least/i);
   });
+
+  // Legal rev 3 (CPO review 2026-10-27): no linkage-impossibility overclaim;
+  // anonymity is claimed only for the published aggregate; the purpose-specific
+  // contributor token is disclosed; "before it is published", not "before
+  // anyone sees it".
+  it("disclosure does not overclaim anonymity and discloses the signal token", () => {
+    expect(SIGNAL_DISCLOSURE).not.toMatch(/cannot be matched back/i);
+    expect(SIGNAL_DISCLOSURE).not.toMatch(/before anyone sees it/i);
+    expect(SIGNAL_DISCLOSURE).toMatch(/designed to make .*hard/i);
+    expect(SIGNAL_DISCLOSURE).toMatch(/we do not claim it is impossible/i);
+    expect(SIGNAL_DISCLOSURE).toMatch(/before it is published/i);
+    expect(SIGNAL_DISCLOSURE).toMatch(/purpose-specific signal token/i);
+    expect(SIGNAL_DISCLOSURE).toMatch(/100 distinct contributors/i);
+    expect(SIGNAL_DISCLOSURE).toMatch(/24 hours/i);
+  });
+
+  it("UI title/checkbox copy qualifies anonymity to the published aggregate", () => {
+    expect(SIGNALS_TITLE).toBe("Community signals");
+    expect(SIGNALS_TITLE_HINT).toMatch(/anonymous only in aggregate/i);
+    expect(SIGNALS_TITLE_HINT).toMatch(/pseudonymous, not anonymous/i);
+  });
 });
 
 describe("follow-up prompt (one per entry, skippable, disableable)", () => {
@@ -129,6 +150,20 @@ describe("referral stub consent (field-level, special tick, purge, revoke)", () 
     const c = getReferralConsent(s);
     expect(c?.fields.moodSummary).toBe(true);
     expect(c?.fields.topicTag).toBe(false);
+  });
+
+  // CPO review 2026-10-27: nothing is queued (pre-send confirmation refuses)
+  // unless at least one field is consented — an empty item must carry zero
+  // data keys so the UI gate has a structural counterpart.
+  it("no consented fields ⇒ item carries zero shared values", () => {
+    const noneOn = {
+      ...fullOn,
+      fields: { moodSummary: false, topicTag: false },
+      specialCategory: { [SPECIAL_CATEGORY_FIELD]: false },
+      specialCategoryTick: false,
+    };
+    const item = buildReferralItem(noneOn, getReferralPseudonym(s), { sentiment: "POSITIVE" }, DAYMS);
+    expect(Object.keys(item.data)).toHaveLength(0);
   });
 
   it("queue items carry only consented fields under the referral pseudonym", () => {

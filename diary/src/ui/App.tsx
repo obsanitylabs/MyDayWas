@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Diary, type DecryptedEntry, type Sentiment } from "../app/api";
+import { Diary, utcDay, type DecryptedEntry, type Sentiment } from "../app/api";
 import { connectAccounts, getInjectedProvider } from "../auth/wallet";
 import { log } from "../log";
 import { getSignalsOptIn, revokeSignals, setSignalsOptIn } from "../signals/settings";
-import { SIGNAL_DISCLOSURE } from "../signals/disclosure";
+import { SIGNAL_DISCLOSURE, SIGNALS_TITLE, SIGNALS_TITLE_HINT } from "../signals/disclosure";
 import { buildSignalPayload, getContributorToken, httpTransport, rotateContributorToken } from "../signals/submit";
 import { isFollowUpDisabled, markPrompted, onDeviceFollowUp, setFollowUpDisabled, shouldPromptFor, skipPrompt } from "../followup/prompt";
 import { getReferralPseudonym, rotateReferralPseudonym } from "../referral/pseudonym";
@@ -157,10 +157,25 @@ export function App(): React.ReactElement {
     if (!diary || !signalsOn) return;
     setBusy(true);
     try {
-      const payload = buildSignalPayload(sentiment, getContributorToken(storage));
+      // Signal source: derive from the LATEST SAVED ENTRY for today — the
+      // signal must reflect what was actually saved, not the compose selector.
+      const today = utcDay(Date.now());
+      const todays = entries.filter((e) => e.day === today);
+      if (todays.length === 0) {
+        setSignalStatus(
+          "No saved entry for today yet. The signal is derived from your saved entry's sentiment tag, so save today's entry first.",
+        );
+        return;
+      }
+      const savedSentiment = todays[todays.length - 1].sentiment;
+      const payload = buildSignalPayload(savedSentiment, getContributorToken(storage));
       if (RELAYER_URL) {
         await httpTransport(RELAYER_URL).submit(payload);
-        setSignalStatus(`Sent — only "${payload.sentiment}" and today's UTC day.`);
+        // Staging honesty: the relayer runs dry-run on staging; acceptance is
+        // NOT publication. Never claim "sent/published" here.
+        setSignalStatus(
+          `Accepted by the relayer (staging dry-run; not published) — only "${payload.sentiment}" and today's UTC day.`,
+        );
       } else {
         // Honest staging behavior: never pretend a send happened.
         setSignalStatus("Prepared, but not sent: no relayer URL is configured on this staging build.");
@@ -215,6 +230,60 @@ export function App(): React.ReactElement {
       setErr(String(e));
     }
   };
+
+  // ---- M4: referral stub — pre-send confirmation ----
+  // Legal rev 3: the user must SEE exactly what will be shared (partner,
+  // purpose, exact field values) before anything is queued, and at least one
+  // field must be consented. Values derive from the LATEST SAVED ENTRY.
+  const enqueueReferralItem = useCallback(() => {
+    const c = getReferralConsent(storage);
+    if (!c?.referralEnabled) {
+      setRefStatus("Enable the referral consent first.");
+      return;
+    }
+    const consented = [
+      ...(c.fields.moodSummary ? ["moodSummary"] as const : []),
+      ...(c.fields.topicTag ? ["topicTag"] as const : []),
+      ...(c.specialCategory[SPECIAL_CATEGORY_FIELD] ? [SPECIAL_CATEGORY_FIELD] as const : []),
+    ];
+    if (consented.length === 0) {
+      setRefStatus("Tick at least one field to share before queueing a referral.");
+      return;
+    }
+    const today = utcDay(Date.now());
+    const todays = entries.filter((e) => e.day === today);
+    if (todays.length === 0) {
+      setRefStatus("No saved entry for today yet — referral fields derive from your saved entry.");
+      return;
+    }
+    const saved = todays[todays.length - 1];
+    const item = buildReferralItem(c, getReferralPseudonym(storage), { sentiment: saved.sentiment });
+    const preview = Object.entries(item.data)
+      .map(([k, v]) => `  • ${k}: ${v}`)
+      .join("\n");
+    const ok = window.confirm(
+      `Queue this referral for a curated partner?\n\n` +
+        `Partner purpose: reach out to you about mood-support resources (preview stub — no delivery yet).\n` +
+        `Under your separate referral pseudonym, these EXACT values would be shared:\n\n${preview}\n\n` +
+        `The queue purges within 30 days. Continue?`,
+    );
+    if (!ok) {
+      setRefStatus("Not queued — you cancelled before anything was shared.");
+      return;
+    }
+    enqueue(storage, item);
+    purge(storage); // retention cap enforced at every queue operation too
+    setRefStatus(
+      "Queued (stub) — nothing is delivered; the queue purges within 30 days and is purged automatically on load.",
+    );
+  }, [entries, storage]);
+
+  // Legal retention cap (≤30 days) is enforced AUTOMATICALLY on load and on
+  // every queue operation — never only behind a user-triggered button.
+  useEffect(() => {
+    const n = purge(storage);
+    if (n > 0) setRefStatus(`Purged ${n} expired referral queue item(s) automatically on load.`);
+  }, [storage]);
 
   const del = async (id: string) => {
     if (!diary) return;
@@ -337,7 +406,8 @@ export function App(): React.ReactElement {
           )}
 
           <div className="card signals">
-            <h2>Anonymous community signals</h2>
+            <h2>{SIGNALS_TITLE}</h2>
+            <p className="hint">{SIGNALS_TITLE_HINT}</p>
             <p className="hint" style={{ whiteSpace: "pre-wrap" }}>{SIGNAL_DISCLOSURE}</p>
             <div className="row">
               <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -346,7 +416,7 @@ export function App(): React.ReactElement {
                   checked={signalsOn}
                   onChange={(e) => void toggleSignals(e.target.checked)}
                 />
-                Share how my day felt (anonymous)
+                Share how my day felt (pseudonymous; published counts are anonymous in aggregate)
               </label>
               <span className="spacer" />
               <button onClick={shareSignal} disabled={busy || !signalsOn}>
@@ -411,20 +481,7 @@ export function App(): React.ReactElement {
               </>
             )}
             <div className="row">
-              <button
-                onClick={() => {
-                  const c = getReferralConsent(storage);
-                  if (c?.referralEnabled) {
-                    const item = buildReferralItem(c, getReferralPseudonym(storage), { sentiment });
-                    enqueue(storage, item);
-                    setRefStatus("Queued (stub) — nothing is delivered; the queue purges within 30 days.");
-                  } else {
-                    setRefStatus("Enable the referral consent first.");
-                  }
-                }}
-              >
-                Queue referral (stub)
-              </button>
+              <button onClick={enqueueReferralItem}>Queue referral (stub)</button>
               <button onClick={() => { const n = purge(storage); setRefStatus(`Purged ${n} expired queue item(s).`); }}>
                 Purge queue now
               </button>

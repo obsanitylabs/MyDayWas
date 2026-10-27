@@ -8,7 +8,17 @@
 export const SIGNAL_DISCLOSURE = [
   "What is shared if you turn this on: one thing — how your day felt (positive, negative, or neutral) and which UTC day it was. Nothing else.",
   "What is NOT shared: your diary text, your entry, your wallet address, any device identifier, your referral pseudonym, your precise time, or your location.",
-  "Your signal is pooled with at least 99 other people before anyone sees it, and it is published at least 24 hours later, so it cannot be matched back to you or to a specific entry.",
-  "Turning this off stops all future sharing immediately. Anything already published is anonymous and cannot be withdrawn, because it is only a group count.",
+  "To count each person once per day, a random, purpose-specific signal token also leaves your device with your signal. It is not your wallet address, not a device identifier, and not your referral pseudonym. It is rotated when you turn signals off.",
+  "Your signal is pooled with at least 100 distinct contributors before it is published, and it is published at least 24 hours later. This is designed to make matching a signal back to you or a specific entry hard — we do not claim it is impossible (for example, someone watching your own wallet or nearby chain activity could in theory still infer linkage).",
+  "Turning this off stops all future sharing immediately and rotates your signal token. Anything already published is only a group count; it cannot be withdrawn.",
   "This is separate from your diary (which stays encrypted on your device) and separate from any partner referral.",
 ].join("\n\n");
+
+/**
+ * Legal rev 3 wording constraint: a single person's input is NOT "anonymous".
+ * The published aggregate is called anonymous only because it requires at
+ * least 100 distinct contributors AND a 24-hour delay before publication.
+ */
+export const SIGNALS_TITLE = "Community signals";
+export const SIGNALS_TITLE_HINT =
+  "Published counts are anonymous only in aggregate: they are released only after at least 100 distinct contributors and a 24-hour delay. Your own contribution is pseudonymous, not anonymous.";
