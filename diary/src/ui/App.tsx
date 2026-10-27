@@ -246,6 +246,13 @@ export function App(): React.ReactElement {
                 ? "A passphrase-wrapped key backup exists on this account."
                 : "No passphrase backup set on this device (it can only be set at onboarding in v1)."}
             </p>
+            <p className="hint">
+              Recovery trade-offs you should know: your diary key is derived from your wallet.
+              If someone obtains <strong>both your wallet seed and your sync account access</strong>,
+              they can re-derive your key and decrypt your diary. And if you lose{" "}
+              <strong>your device, your passphrase backup, and your wallet</strong> at the same time,
+              your diary cannot be recovered by anyone — keep at least one of the three safe.
+            </p>
             <details className="backup">
               <summary>Change passphrase</summary>
               <div className="row">
