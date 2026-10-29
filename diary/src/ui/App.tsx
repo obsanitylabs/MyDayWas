@@ -5,15 +5,17 @@ import { log } from "../log";
 import { getSignalsOptIn, revokeSignals, setSignalsOptIn } from "../signals/settings";
 import { SIGNAL_DISCLOSURE, SIGNALS_TITLE, SIGNALS_TITLE_HINT } from "../signals/disclosure";
 import { buildSignalPayload, getContributorToken, httpTransport, rotateContributorToken } from "../signals/submit";
-import { isFollowUpDisabled, markPrompted, onDeviceFollowUp, setFollowUpDisabled, shouldPromptFor, skipPrompt } from "../followup/prompt";
+import { isFollowUpEnabled, markPrompted, onDeviceFollowUp, setFollowUpEnabled, shouldPromptFor, skipPrompt } from "../followup/prompt";
 import { getReferralPseudonym, rotateReferralPseudonym } from "../referral/pseudonym";
 import {
-  REFERRAL_FIELDS,
-  SPECIAL_CATEGORY_FIELD,
+  REGIONS,
+  SPECIAL_CATEGORY_FIELDS,
   getReferralConsent,
   revokeReferral,
   setReferralConsent,
   type ReferralConsent,
+  type ReferralRegion,
+  type ReferralSpecialField,
 } from "../referral/consent";
 import { buildReferralItem, clearQueue, enqueue, purge } from "../referral/queue";
 
@@ -53,9 +55,11 @@ export function App(): React.ReactElement {
   const [signalsOn, setSignalsOn] = useState(() => getSignalsOptIn(storage).enabled);
   const [signalStatus, setSignalStatus] = useState<string>("");
   const [followUp, setFollowUp] = useState<{ id: string; sentiment: Sentiment } | null>(null);
-  const [followUpDisabled, setFollowUpDisabledState] = useState(() => isFollowUpDisabled(storage));
+  // Follow-up is OFF BY DEFAULT (spec rev 3 §5.1, CPO decision 2026-10-27):
+  // opt in from Settings; no prompt appears until then.
+  const [followUpEnabled, setFollowUpEnabledState] = useState(() => isFollowUpEnabled(storage));
   const [followUpText, setFollowUpText] = useState("");
-  const [refConsent, setRefConsentState] = useState<ReferralConsent | null>(() => getReferralConsent(storage));
+  const [refConsent, setRefConsentState] = useState<ReferralConsent>(() => getReferralConsent(storage));
   const [refStatus, setRefStatus] = useState<string>("");
 
   const refresh = useCallback(async (d: Diary) => {
@@ -128,8 +132,8 @@ export function App(): React.ReactElement {
       setText("");
       await refresh(diary);
       setStatus(online ? "saved locally; will sync" : "saved locally (offline)");
-      // M4: one lightweight follow-up prompt per entry (skippable/disableable,
-      // on-device only) — never when the feature is disabled.
+      // M4: one lightweight follow-up prompt per entry — ONLY after the
+      // Settings opt-in (default off), skippable/disableable, on-device only.
       if (shouldPromptFor(storage, saved.id)) {
         markPrompted(storage, saved.id);
         setFollowUp({ id: saved.id, sentiment: saved.sentiment });
@@ -202,26 +206,26 @@ export function App(): React.ReactElement {
       setBusy(false);
     }
   };
-  const disableFollowUps = () => {
-    setFollowUpDisabled(storage, true);
-    setFollowUpDisabledState(true);
-    setFollowUp(null);
-    setFollowUpText("");
+  const toggleFollowUps = (on: boolean) => {
+    setFollowUpEnabled(storage, on);
+    setFollowUpEnabledState(on);
+    if (!on) {
+      // Toggling off hides all unanswered prompts; drafts are discarded.
+      setFollowUp(null);
+      setFollowUpText("");
+    }
   };
 
-  // ---- M4: referral stub ----
+  // ---- M4: referral stub (spec rev 3 §6.4 staging field set) ----
+  // Every field starts UNTICKED. Each special-category health field needs its
+  // OWN separate explicit confirmation (a confirmation dialog), structurally
+  // enforced in consent.ts. Contact method is required before sending.
+  const [contactType, setContactType] = useState<"email" | "phone">("email");
+  const [contactValue, setContactValue] = useState("");
+  const [region, setRegion] = useState<ReferralRegion>("EU");
+
   const updateRefConsent = (patch: Partial<ReferralConsent>) => {
-    const current: ReferralConsent =
-      refConsent ??
-      {
-        v: 1,
-        referralEnabled: false,
-        fields: { moodSummary: false, topicTag: false },
-        specialCategory: { [SPECIAL_CATEGORY_FIELD]: false },
-        specialCategoryTick: false,
-        grantedDay: 0,
-      };
-    const next = { ...current, ...patch } as ReferralConsent;
+    const next = { ...refConsent, ...patch } as ReferralConsent;
     try {
       setReferralConsent(storage, next);
       setRefConsentState(getReferralConsent(storage));
@@ -231,39 +235,61 @@ export function App(): React.ReactElement {
     }
   };
 
-  // ---- M4: referral stub — pre-send confirmation ----
-  // Legal rev 3: the user must SEE exactly what will be shared (partner,
-  // purpose, exact field values) before anything is queued, and at least one
-  // field must be consented. Values derive from the LATEST SAVED ENTRY.
+  /** Ticking a special-category field opens its OWN confirmation. */
+  const tickSpecial = (f: ReferralSpecialField, on: boolean) => {
+    if (!on) {
+      updateRefConsent({
+        specialCategory: { ...refConsent.specialCategory, [f]: false },
+        specialConfirmed: { ...refConsent.specialConfirmed, [f]: false },
+      });
+      return;
+    }
+    const label =
+      f === "exercise" ? "Information about your exercise"
+      : f === "medication" ? "Information about your medication"
+      : f === "healthMood" ? "Mood framed as a health concern"
+      : "That you are in crisis and need urgent help";
+    const crisisSignpost =
+      f === "crisis"
+        ? `If you are in immediate danger, contact your local emergency number now. The staging placeholder partner is not an emergency service. We do not monitor your entries or your request.\n\n`
+        : "";
+    const ok = window.confirm(
+      `${crisisSignpost}Confirm sensitive health sharing\n\n` +
+        `I agree to send this health information to the staging placeholder partner for this request only. This is sensitive health data.\n\n` +
+        `Field: ${f} — ${label}.`,
+    );
+    if (!ok) return; // cancel leaves the field unticked
+    updateRefConsent({
+      specialCategory: { ...refConsent.specialCategory, [f]: true },
+      specialConfirmed: { ...refConsent.specialConfirmed, [f]: true },
+    });
+  };
+
+  // ---- M4: referral stub — pre-send review ----
+  // Legal rev 3 / spec rev 3 §6.5: the user must SEE exactly what will be
+  // shared (partner, purpose, exact field values) before anything is queued,
+  // and "Send request" is gated on the required contact method being ticked.
   const enqueueReferralItem = useCallback(() => {
     const c = getReferralConsent(storage);
-    if (!c?.referralEnabled) {
+    if (!c.referralEnabled) {
       setRefStatus("Enable the referral consent first.");
       return;
     }
-    const consented = [
-      ...(c.fields.moodSummary ? ["moodSummary"] as const : []),
-      ...(c.fields.topicTag ? ["topicTag"] as const : []),
-      ...(c.specialCategory[SPECIAL_CATEGORY_FIELD] ? [SPECIAL_CATEGORY_FIELD] as const : []),
-    ];
-    if (consented.length === 0) {
-      setRefStatus("Tick at least one field to share before queueing a referral.");
+    if (!c.fields.contactMethod) {
+      setRefStatus("Add a contact method so the partner can reply — it is required before sending.");
       return;
     }
-    const today = utcDay(Date.now());
-    const todays = entries.filter((e) => e.day === today);
-    if (todays.length === 0) {
-      setRefStatus("No saved entry for today yet — referral fields derive from your saved entry.");
+    if (!contactValue.trim()) {
+      setRefStatus("Enter the contact detail (email or phone) before sending.");
       return;
     }
-    const saved = todays[todays.length - 1];
-    const item = buildReferralItem(c, getReferralPseudonym(storage), { sentiment: saved.sentiment });
+    const item = buildReferralItem(c, getReferralPseudonym(storage), { type: contactType, value: contactValue }, region);
     const preview = Object.entries(item.data)
       .map(([k, v]) => `  • ${k}: ${v}`)
       .join("\n");
     const ok = window.confirm(
       `Queue this referral for a curated partner?\n\n` +
-        `Partner purpose: reach out to you about mood-support resources (preview stub — no delivery yet).\n` +
+        `Partner purpose: reach out to you about mood-support resources (preview stub — no delivery yet; not a live partner).\n\n` +
         `Under your separate referral pseudonym, these EXACT values would be shared:\n\n${preview}\n\n` +
         `The queue purges within 30 days. Continue?`,
     );
@@ -276,7 +302,7 @@ export function App(): React.ReactElement {
     setRefStatus(
       "Queued (stub) — nothing is delivered; the queue purges within 30 days and is purged automatically on load.",
     );
-  }, [entries, storage]);
+  }, [contactType, contactValue, region, storage]);
 
   // Legal retention cap (≤30 days) is enforced AUTOMATICALLY on load and on
   // every queue operation — never only behind a user-triggered button.
@@ -328,7 +354,7 @@ export function App(): React.ReactElement {
 
   const deleteAccount = async () => {
     if (!diary) return;
-    if (!window.confirm("Delete ALL diary entries and this account's sync ciphertext? This cannot be undone.")) return;
+    if (!window.confirm("Delete ALL diary entries and this account's sync ciphertext? This cannot be undone. We will stop your signals, clear your signal queue, and purge any pending partner referrals. It does not change groups already published on-chain.")) return;
     await diary.deleteAccount();
     setDiary(null);
     setEntries([]);
@@ -382,7 +408,7 @@ export function App(): React.ReactElement {
             </div>
           </div>
 
-          {followUp && !followUpDisabled && (
+          {followUp && followUpEnabled && (
             <div className="card followup">
               <h2>One quick follow-up</h2>
               <p className="hint">{onDeviceFollowUp({ sentiment: followUp.sentiment }).question}</p>
@@ -391,7 +417,7 @@ export function App(): React.ReactElement {
                 onChange={(e) => setFollowUpText(e.target.value)}
                 placeholder={onDeviceFollowUp({ sentiment: followUp.sentiment }).placeholder}
               />
-              <p className="hint">This never leaves your device unless you save it as an entry. Inference is on-device only.</p>
+              <p className="hint">Optional. Only you can read this — it never leaves your device unless you save it as an entry. Inference is on-device only.</p>
               <div className="row">
                 <button className="primary" onClick={answerFollowUp} disabled={busy || !followUpText.trim()}>
                   Save as entry
@@ -400,10 +426,33 @@ export function App(): React.ReactElement {
                   Skip
                 </button>
                 <span className="spacer" />
-                <button onClick={disableFollowUps}>Don't ask again</button>
+                <button onClick={() => toggleFollowUps(false)}>Turn off follow-ups</button>
               </div>
             </div>
           )}
+
+          <div className="card settings">
+            <h2>Settings · Privacy</h2>
+            <p className="hint">
+              Signals, follow-ups, and referrals are separate. There is no "agree to everything" control,
+              and every optional sharing feature is off by default.
+            </p>
+            <div className="row">
+              <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <input
+                  type="checkbox"
+                  checked={followUpEnabled}
+                  onChange={(e) => toggleFollowUps(e.target.checked)}
+                />
+                Follow-up questions (off by default — opt in here)
+              </label>
+            </div>
+            <p className="hint">
+              {followUpEnabled
+                ? "One optional reflection prompt after you save an entry. Generated on this device; your answer is encrypted with the entry. You can skip any prompt."
+                : "No follow-up prompts. Your saved entries are unchanged. Turn on to get one optional reflection prompt after you save an entry."}
+            </p>
+          </div>
 
           <div className="card signals">
             <h2>{SIGNALS_TITLE}</h2>
@@ -430,50 +479,81 @@ export function App(): React.ReactElement {
           <div className="card referral">
             <h2>Partner referral (preview stub)</h2>
             <p className="hint">
-              Curated partners only; nothing is sent anywhere in this preview. A separate
-              referral pseudonym is used — never your wallet. Consent is per field, and the
-              health/mood field needs its own explicit tick. Queued items are purged within
-              30 days, and revocation clears the queue and rotates the pseudonym.
+              Staging placeholder — not a live partner; no request is delivered anywhere in this preview.
+              A separate referral pseudonym is used — never your wallet. Every field starts unticked;
+              consent is per field, and each sensitive health field needs its own explicit confirmation.
+              Queued items are purged within 30 days, and revocation clears the queue and rotates the pseudonym.
             </p>
             <div className="row">
               <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <input
                   type="checkbox"
-                  checked={refConsent?.referralEnabled ?? false}
+                  checked={refConsent.referralEnabled}
                   onChange={(e) => updateRefConsent({ referralEnabled: e.target.checked })}
                 />
                 Let a partner reach me
               </label>
             </div>
-            {refConsent?.referralEnabled && (
+            {refConsent.referralEnabled && (
               <>
                 <div className="row">
-                  {REFERRAL_FIELDS.map((f) => (
-                    <label key={f} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={refConsent.fields.contactMethod}
+                      onChange={(e) => updateRefConsent({ fields: { ...refConsent.fields, contactMethod: e.target.checked } })}
+                    />
+                    Contact method (required — how they can reply)
+                  </label>
+                  {refConsent.fields.contactMethod && (
+                    <span className="sentiments" style={{ display: "flex", gap: 6 }}>
+                      <select value={contactType} onChange={(e) => setContactType(e.target.value as "email" | "phone")}>
+                        <option value="email">email</option>
+                        <option value="phone">phone</option>
+                      </select>
                       <input
-                        type="checkbox"
-                        checked={refConsent?.fields[f] ?? false}
-                        onChange={(e) => updateRefConsent({ fields: { ...refConsent?.fields, [f]: e.target.checked } })}
+                        placeholder={contactType === "email" ? "email address" : "phone number"}
+                        value={contactValue}
+                        onChange={(e) => setContactValue(e.target.value)}
                       />
-                      {f === "moodSummary" ? "mood summary" : "topic tag"}
-                    </label>
-                  ))}
+                    </span>
+                  )}
                 </div>
                 <div className="row">
                   <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <input
                       type="checkbox"
-                      checked={refConsent?.specialCategory[SPECIAL_CATEGORY_FIELD] ?? false}
-                      onChange={(e) =>
-                        updateRefConsent({
-                          specialCategory: { [SPECIAL_CATEGORY_FIELD]: e.target.checked },
-                          specialCategoryTick: e.target.checked,
-                        })
-                      }
+                      checked={refConsent.fields.region}
+                      onChange={(e) => updateRefConsent({ fields: { ...refConsent.fields, region: e.target.checked } })}
                     />
-                    health/mood note (special category)
+                    Region (broad only)
                   </label>
+                  {refConsent.fields.region && (
+                    <select value={region} onChange={(e) => setRegion(e.target.value as ReferralRegion)}>
+                      {REGIONS.map((r) => (
+                        <option key={r} value={r}>{r}</option>
+                      ))}
+                    </select>
+                  )}
                 </div>
+                {SPECIAL_CATEGORY_FIELDS.map((f) => (
+                  <div className="row" key={f}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <input
+                        type="checkbox"
+                        checked={refConsent.specialCategory[f]}
+                        onChange={(e) => tickSpecial(f, e.target.checked)}
+                      />
+                      {f} (sensitive health data — own confirmation)
+                    </label>
+                  </div>
+                ))}
+                {refConsent.specialCategory.crisis && (
+                  <p className="hint">
+                    If you are in immediate danger, contact your local emergency number now. The staging
+                    placeholder partner is not an emergency service. We do not monitor your entries or your request.
+                  </p>
+                )}
                 <p className="hint">
                   Referral pseudonym: <code>{getReferralPseudonym(storage).slice(0, 12)}…</code>{" "}
                   (separate from your wallet)
@@ -481,7 +561,9 @@ export function App(): React.ReactElement {
               </>
             )}
             <div className="row">
-              <button onClick={enqueueReferralItem}>Queue referral (stub)</button>
+              <button onClick={enqueueReferralItem} disabled={!refConsent.referralEnabled || !refConsent.fields.contactMethod || !contactValue.trim()}>
+                Queue referral (stub)
+              </button>
               <button onClick={() => { const n = purge(storage); setRefStatus(`Purged ${n} expired queue item(s).`); }}>
                 Purge queue now
               </button>

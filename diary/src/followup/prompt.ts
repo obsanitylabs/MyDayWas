@@ -1,24 +1,26 @@
 /**
  * Follow-up prompt logic (M4, OBS-83).
  *
- * Constraints (CPO/OBS-82): ONE lightweight prompt per entry; skippable;
- * disableable; NO dark patterns; inference runs ON-DEVICE ONLY — the diary
- * plaintext never leaves the device. We store "seen" entry ids locally so the
- * same entry is never prompted twice; entry ids are local device data and are
- * never included in any submission or log line.
+ * Constraints (CPO decision 2026-10-27, ux-consent-spec-m4 rev 3 §5.1):
+ * follow-up is OFF BY DEFAULT — users opt in from Settings. Prompting after
+ * every save without an explicit opt-in is repeated interaction pressure (a
+ * dark pattern), so the initial switch state is off. When enabled: ONE
+ * lightweight prompt per entry; skippable; disableable; inference runs
+ * ON-DEVICE ONLY. We store "seen" entry ids locally so the same entry is never
+ * prompted twice; entry ids are local device data and never enter any
+ * submission or log line.
  */
 
-const DISABLED_KEY = "mydaywas.followup.disabled.v1";
+const ENABLED_KEY = "mydaywas.followup.enabled.v1";
 const SEEN_KEY = "mydaywas.followup.seen.v1";
 
-export function isFollowUpDisabled(storage: Storage): boolean {
-  // default: enabled (but prompt only appears after a save, one per entry,
-  // and is instantly skippable/disableable)
-  return storage.getItem(DISABLED_KEY) === "true";
+/** Default OFF (opt-in from Settings) — spec rev 3 §5.1 / §5.2. */
+export function isFollowUpEnabled(storage: Storage): boolean {
+  return storage.getItem(ENABLED_KEY) === "true";
 }
 
-export function setFollowUpDisabled(storage: Storage, disabled: boolean): void {
-  storage.setItem(DISABLED_KEY, disabled ? "true" : "false");
+export function setFollowUpEnabled(storage: Storage, enabled: boolean): void {
+  storage.setItem(ENABLED_KEY, enabled ? "true" : "false");
 }
 
 function seen(storage: Storage): Set<string> {
@@ -33,9 +35,9 @@ function saveSeen(storage: Storage, s: Set<string>): void {
   storage.setItem(SEEN_KEY, JSON.stringify([...s]));
 }
 
-/** Prompt at most once per entry, and never when disabled. */
+/** Prompt at most once per entry, and only when the opt-in is ON. */
 export function shouldPromptFor(storage: Storage, entryId: string): boolean {
-  if (isFollowUpDisabled(storage)) return false;
+  if (!isFollowUpEnabled(storage)) return false;
   return !seen(storage).has(entryId);
 }
 

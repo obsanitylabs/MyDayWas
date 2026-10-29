@@ -9,7 +9,7 @@
  */
 
 import { utcDay } from "../app/api";
-import { REFERRAL_FIELDS, SPECIAL_CATEGORY_FIELD, type ReferralConsent } from "./consent";
+import { REFERRAL_FIELDS, SPECIAL_CATEGORY_FIELDS, type ReferralConsent } from "./consent";
 
 const QUEUE_KEY = "mydaywas.referral.queue.v1";
 
@@ -40,25 +40,36 @@ function save(storage: Storage, items: ReferralQueueItem[]): void {
 }
 
 /**
- * Build a queue item from a diary entry using ONLY the fields consented in
- * `consent`. Throws if the entry content would leak a non-consented field.
+ * Build a queue item using ONLY the fields consented in `consent`. Throws if
+ * any value would leak a non-consented or non-allowlisted field.
  */
 export function buildReferralItem(
   consent: ReferralConsent,
   pseudonym: string,
-  entry: { sentiment: string; topic?: string },
+  contact: { type: "email" | "phone"; value: string },
+  region: string | undefined,
   nowMs: number = Date.now(),
 ): ReferralQueueItem {
   const data: Record<string, string> = {};
-  if (consent.referralEnabled && consent.fields.moodSummary) data.moodSummary = entry.sentiment;
-  if (consent.referralEnabled && consent.fields.topicTag && entry.topic !== undefined) {
-    data.topicTag = entry.topic;
+  if (consent.referralEnabled) {
+    if (consent.fields.contactMethod) {
+      data.contactType = contact.type;
+      data.contactValue = contact.value;
+    }
+    if (consent.fields.region && region !== undefined) data.region = region;
+    for (const f of SPECIAL_CATEGORY_FIELDS) {
+      if (consent.specialCategory[f]) data[f] = "shared-with-consent";
+    }
   }
-  if (consent.referralEnabled && consent.specialCategory[SPECIAL_CATEGORY_FIELD]) {
-    data[SPECIAL_CATEGORY_FIELD] = "shared-with-consent";
-  }
-  // Never store diary text: assert the invariant.
-  if (Object.keys(data).some((k) => !( [...REFERRAL_FIELDS, SPECIAL_CATEGORY_FIELD] as string[]).includes(k))) {
+  // Never store diary text: assert the whitelist invariant.
+  const allow = [
+    "contactType",
+    "contactValue",
+    "region",
+    ...REFERRAL_FIELDS.filter((f) => f !== "contactMethod" && f !== "region"),
+    ...SPECIAL_CATEGORY_FIELDS,
+  ];
+  if (Object.keys(data).some((k) => !allow.includes(k))) {
     throw new Error("referral item violated field whitelist");
   }
   return { v: 1, pseudonym, data, enqueuedDay: utcDay(nowMs) };
