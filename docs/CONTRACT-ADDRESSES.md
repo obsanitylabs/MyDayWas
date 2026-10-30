@@ -1,17 +1,27 @@
 # MyDayWas contract addresses — authoritative record (M4, OBS-83)
 
-Status: **There is NO deployed `AggregateSentimentSignals` contract. No address exists yet.**
+Status: **`AggregateSentimentSignals` is deployed to STAGING (Sepolia, chain 11155111). Mainnet: not deployed, and nothing here authorizes mainnet.**
 
 ## Authoritative statement
 
-- The `AggregateSentimentSignals` contract (`contracts/AggregateSentimentSignals.sol`,
-  M2 architecture §2) is implemented on branch `m4/signals-v1` but **not deployed to
-  any network**. Deployment is blocked until the **Chief Auditor review artifact is
-  recorded on OBS-83** (hard gate).
-- When it deploys, its address will be recorded **only** on OBS-83 and mirrored here.
-  Nothing else is authoritative.
-- The relayer runs with `DryRunSubmitter` until that gate clears; no `recordBatch`
-  transaction is signed or broadcast from this repository.
+- **Staging (Sepolia, chain id 11155111): `AggregateSentimentSignals` at
+  `0x012b840cC9fEd21322f3bA180f3B546E5564EFA7`**
+  (tx `0xfdaa64e9cd48afff7bc35ee888b56b7824efbd76eb3964f1bdeddce7466fdeae`,
+  block 12025670; deployed 2026-10-30 via `contracts/deploy.mjs`, `m4/signals-v1`).
+  Deployer/initial owner: `0xCdC39FD5e8befDB9E95E0219E4f69Ae67c24A90c` (two-step
+  ownership permits later transfer without redeploy). Relayer EOA:
+  `0xD4b73fb5D7AAdC3Ef0f05F84F43a57D2a294D05c`. On-chain verification passed:
+  `owner()`, `relayer()`, `pendingOwner()==0`, `paused()==false`,
+  `getCounts(0)==[0,0,0]`, `recordBatch` selector `0x0f4d576c`,
+  runtime bytecode matches compiled artifact.
+- Deployed from the `m4/signals-v1` revision recorded on OBS-83 (Chief Auditor
+  APPROVE gate cleared, OBS-86; CISO staging sign-off OBS-87). The address is
+  recorded authoritatively on OBS-83 and mirrored here; nothing else is authoritative.
+- The relayer continues on `DryRunSubmitter` on staging until the OBS-89 F1/F2
+  follow-up lands and CISO re-verifies; no production `recordBatch` traffic is
+  authorized from this record.
+- **Mainnet: NOT deployed.** OBS-86 requires an external audit plus separate
+  written sign-off before any mainnet deployment; no such sign-off exists.
 
 ## Historical addresses (NOT authoritative, NOT deployed by us)
 

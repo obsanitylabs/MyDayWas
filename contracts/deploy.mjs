@@ -194,7 +194,7 @@ if (derived.toLowerCase() !== DEPLOYER.toLowerCase()) {
 }
 console.log("verified: secret-injected key controls the deployer address (key not printed)");
 
-const GAS = 2_000_000n;
+const GAS = 50_000_000n;
 const nonce = BigInt(await rpc("eth_getTransactionCount", [DEPLOYER, "pending"]));
 const gasPriceRaw = BigInt(await rpc("eth_gasPrice", []));
 const gasPrice = (gasPriceRaw * 150n) / 100n; // 1.5x headroom; Sepolia basefee can spike
