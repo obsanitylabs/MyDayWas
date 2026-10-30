@@ -9,6 +9,7 @@ import type { SignalStore } from "./store.ts";
 import type { KeyCustody } from "./keycustody.ts";
 import type { ChainSubmitter, RecordBatch } from "./chain.ts";
 import { log } from "./log.ts";
+import { MemoryPublicationLedger, type PublicationLedger } from "./ledger.ts";
 
 /** k-anonymity threshold: a cell is only ever committed if it has >= k distinct contributors. */
 export const K_THRESHOLD = 100;
@@ -51,6 +52,15 @@ export class NotYetPublishable extends Error {
   }
 }
 
+/** F2 (binding): re-publishing an already-published day would double-commit add-only deltas. */
+export class AlreadyPublished extends Error {
+  readonly dayId: number;
+  constructor(dayId: number) {
+    super(`day ${dayId} already published by this relayer instance`);
+    this.dayId = dayId;
+  }
+}
+
 /** Day D is publishable only at/after 00:00 UTC on D+1 (T+24h). */
 export function publishableAt(dayId: number): number {
   return (dayId + 1) * MS_PER_DAY;
@@ -60,17 +70,21 @@ export class PublicationPipeline {
   private readonly store: SignalStore;
   private readonly custody: KeyCustody;
   private readonly chain: ChainSubmitter;
+  private readonly ledger: PublicationLedger;
   private readonly opts: { kThreshold?: number; delayMs?: number };
 
   constructor(
     store: SignalStore,
     custody: KeyCustody,
     chain: ChainSubmitter,
-    opts: { kThreshold?: number; delayMs?: number } = {},
+    opts: { kThreshold?: number; delayMs?: number; ledger?: PublicationLedger } = {},
   ) {
     this.store = store;
     this.custody = custody;
     this.chain = chain;
+    // F2 (binding): per-day replay guard. Staging default is the process-local map;
+    // a durable-store backend drops in via opts without protocol changes (F3).
+    this.ledger = opts.ledger ?? new MemoryPublicationLedger();
     this.opts = opts;
   }
 
@@ -129,10 +143,33 @@ export class PublicationPipeline {
   /**
    * Commit one day's suppressed batch: one `recordBatch` per day/sentiment set,
    * then emit the signed daily submitted-vs-published reconciliation artifact.
+   *
+   * F1 (binding): the signature is produced AFTER submission and covers exactly
+   * what was sent (`result`). The returned artifact is never post-substituted,
+   * so a submitter that mutates the batch cannot pass verification by coincidence:
+   * any artifact carrying a different recordBatch than the one submitted fails.
+   *
+   * F2 (binding): claims `dayId` in the publication ledger before submitting and
+   * rejects re-publishes with AlreadyPublished (add-only on-chain deltas would
+   * otherwise double-commit). The claim is released ONLY when submission itself
+   * failed; any later failure (signing/custody) keeps it, so a retry cannot
+   * double-commit an already-sent batch.
    */
   async publishDay(dayId: number, nowMs: number): Promise<ReconciliationArtifact> {
+    // Read-only gate first: unpublishable days must not consume a ledger claim.
     const batch = this.buildBatch(dayId, nowMs);
-    const result = await this.chain.submitRecordBatch(batch);
+    if (!(await this.ledger.tryClaim(dayId))) throw new AlreadyPublished(dayId);
+
+    let result: RecordBatch;
+    try {
+      result = await this.chain.submitRecordBatch(batch);
+    } catch (e) {
+      // Trust assumption: submitters throw only when no chain effect occurred,
+      // so releasing makes the day safely retryable.
+      await this.ledger.release(dayId);
+      throw e;
+    }
+
     const producedOnDay = Math.floor(nowMs / MS_PER_DAY);
     const unsigned: UnsignedReconciliation = {
       schema: RECONCILIATION_SCHEMA,
@@ -140,17 +177,17 @@ export class PublicationPipeline {
       producedOnDay,
       signedBy: { provider: this.custody.provider, keyId: await this.custody.keyId() },
       cells: batch.cells,
-      chain: { submitter: this.chain.name, recordBatch: batch.hasPublishedCells ? batch : null },
+      // Sign AFTER submit: the artifact carries exactly what was sent to chain.
+      chain: { submitter: this.chain.name, recordBatch: result.hasPublishedCells ? result : null },
     };
     const signature = await this.custody.signReconciliation(canonical(unsigned));
-    const artifact: ReconciliationArtifact = { ...unsigned, signature };
     log(
       "pipeline",
       batch.hasPublishedCells ? "recordBatch committed" : "all cells below k; nothing committed",
       dayId,
       batch.deltas.reduce((a, b) => a + b, 0),
     );
-    return { ...artifact, chain: { submitter: this.chain.name, recordBatch: result } };
+    return { ...unsigned, signature };
   }
 
   /** Verify a reconciliation artifact signature (CI + monitor hook). */

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { LocalDevCustody } from "../src/keycustody.ts";
-import { DryRunSubmitter, encodeRecordBatch } from "../src/chain.ts";
-import { K_THRESHOLD, PublicationPipeline, canonical, publishableAt } from "../src/pipeline.ts";
+import { DryRunSubmitter, encodeRecordBatch, type ChainSubmitter, type RecordBatch } from "../src/chain.ts";
+import { AlreadyPublished, K_THRESHOLD, PublicationPipeline, canonical, publishableAt } from "../src/pipeline.ts";
 import { SignalStore, MAX_NEW_ACCOUNTS_PER_UTC_DAY } from "../src/store.ts";
 import { MS_PER_DAY, parseSubmission, RejectedSubmission, SENTIMENTS, type Sentiment } from "../src/types.ts";
 
@@ -28,6 +28,33 @@ async function addContributors(
 ): Promise<void> {
   for (let i = 0; i < n; i++) {
     await store.record({ v: 1, sentiment, dayId, contributorToken: token(offset + i) }, ingestMs);
+  }
+}
+
+class CountingSubmitter implements ChainSubmitter {
+  readonly name = "counting-test-submitter";
+  submitted: RecordBatch[] = [];
+  async submitRecordBatch(batch: RecordBatch): Promise<RecordBatch> {
+    this.submitted.push(batch);
+    return batch;
+  }
+}
+
+/** Fails the first N submissions, then succeeds (transport-level failure). */
+class FlakySubmitter implements ChainSubmitter {
+  readonly name = "flaky-test-submitter";
+  submitted: RecordBatch[] = [];
+  private failuresLeft: number;
+  constructor(failures: number) {
+    this.failuresLeft = failures;
+  }
+  async submitRecordBatch(batch: RecordBatch): Promise<RecordBatch> {
+    if (this.failuresLeft > 0) {
+      this.failuresLeft--;
+      throw new Error("transport failure");
+    }
+    this.submitted.push(batch);
+    return batch;
   }
 }
 
@@ -160,6 +187,10 @@ describe("below-k suppression (CI-required)", () => {
       submittedContributors: 10,
       published: false,
     });
+    // F1 anchor: below-k artifacts record a null recordBatch BOTH signed and returned —
+    // the signature must cover exactly what is returned (old code returned a non-null
+    // batch here while signing null, so this verification used to fail).
+    expect(await pipeline.verifyArtifact(artifact)).toBe(true);
   });
 
   it("published day: one signed reconciliation artifact, verifiable, tamper-evident", async () => {
@@ -250,6 +281,114 @@ describe("server (HTTP ingest + publish)", () => {
     const p = await post("/v1/publish", { dayId: today });
     expect(p.status).toBe(409);
     server.close();
+  });
+
+  it("F2 over HTTP: replay of an already-published day is rejected 409, exactly one commit", async () => {
+    const { createSignalServer } = await import("../src/server.js");
+    const custody = new LocalDevCustody();
+    const submitter = new CountingSubmitter();
+    const { server } = createSignalServer(custody, { kThreshold: 2, chain: submitter });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    const post = async (path: string, body: unknown): Promise<{ status: number; json: unknown }> => {
+      const res = await fetch(`http://127.0.0.1:${port}${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return { status: res.status, json: await res.json() };
+    };
+    // Publishable day: inside the 7-day ingest window and past T+24h.
+    const dayId = Math.floor(Date.now() / MS_PER_DAY) - 3;
+    for (const i of [0, 1]) {
+      expect(
+        (await post("/v1/signals", { v: 1, sentiment: "POSITIVE", dayId, contributorToken: token(100 + i) })).status,
+      ).toBe(202);
+    }
+    const first = await post("/v1/publish", { dayId });
+    expect(first.status).toBe(200);
+    const replay = await post("/v1/publish", { dayId });
+    expect(replay.status).toBe(409);
+    expect((replay.json as { error: string }).error).toBe("already_published");
+    expect(submitter.submitted.length).toBe(1); // no double-commit of add-only deltas
+    server.close();
+  });
+});
+
+describe("sign-after-submit reconciliation (F1)", () => {
+  it("a submitter that mutates the batch: artifact carries exactly what was sent; pre-send substitution fails verification", async () => {
+    const { store, custody } = newStore();
+    class MutatingSubmitter implements ChainSubmitter {
+      readonly name = "mutating-test-submitter";
+      received: RecordBatch[] = [];
+      async submitRecordBatch(batch: RecordBatch): Promise<RecordBatch> {
+        this.received.push(batch);
+        // e.g. a real transport that normalizes/rewrites the payload before commit
+        return { ...batch, deltas: [batch.deltas[0] * 2, batch.deltas[1], batch.deltas[2]] };
+      }
+    }
+    const submitter = new MutatingSubmitter();
+    const pipeline = new PublicationPipeline(store, custody, submitter);
+    await addContributors(store, DAY0, "POSITIVE", 150);
+
+    // buildBatch is a pure read: this is the PRE-SUBMIT batch (identical content to what was sent in).
+    const preSubmitBatch = pipeline.buildBatch(DAY0, publishMs);
+    const artifact = await pipeline.publishDay(DAY0, publishMs);
+    // The signed/returned artifact contains the SUBMITTED (mutated) batch...
+    expect(artifact.chain.recordBatch?.deltas).toEqual([300, 0, 0]);
+    // ...and verifies against its own signature.
+    expect(await pipeline.verifyArtifact(artifact)).toBe(true);
+    // An artifact claiming the PRE-SUBMIT batch (what the old code signed) fails verification:
+    const preSend = { ...artifact, chain: { submitter: submitter.name, recordBatch: preSubmitBatch } };
+    expect(await pipeline.verifyArtifact(preSend)).toBe(false);
+  });
+});
+
+describe("publish idempotency (F2)", () => {
+  it("rejects replay of an already-published day; exactly one commit", async () => {
+    const { store, custody } = newStore();
+    await addContributors(store, DAY0, "POSITIVE", K_THRESHOLD);
+    const submitter = new CountingSubmitter();
+    const pipeline = new PublicationPipeline(store, custody, submitter);
+    await pipeline.publishDay(DAY0, publishMs);
+    await expect(pipeline.publishDay(DAY0, publishMs)).rejects.toThrow(AlreadyPublished);
+    expect(submitter.submitted.length).toBe(1); // no double-commit of add-only deltas
+  });
+
+  it("cross-day publishing is unaffected (per-day scoping)", async () => {
+    const { store, custody } = newStore();
+    await addContributors(store, DAY0, "POSITIVE", K_THRESHOLD);
+    await addContributors(store, DAY0 + 1, "NEGATIVE", K_THRESHOLD);
+    const submitter = new CountingSubmitter();
+    const pipeline = new PublicationPipeline(store, custody, submitter);
+    const nextPublishMs = publishableAt(DAY0 + 1) + 1;
+    await pipeline.publishDay(DAY0, publishMs);
+    await pipeline.publishDay(DAY0 + 1, nextPublishMs); // a different day is unaffected
+    expect(submitter.submitted.map((b) => b.dayId)).toEqual([DAY0, DAY0 + 1]);
+    await expect(pipeline.publishDay(DAY0, publishMs)).rejects.toThrow(AlreadyPublished);
+    await expect(pipeline.publishDay(DAY0 + 1, nextPublishMs)).rejects.toThrow(AlreadyPublished);
+  });
+
+  it("failed submission releases the claim; day stays retryable and commits once", async () => {
+    const { store, custody } = newStore();
+    await addContributors(store, DAY0, "POSITIVE", K_THRESHOLD);
+    const submitter = new FlakySubmitter(1); // first attempt fails at transport level (no chain effect)
+    const pipeline = new PublicationPipeline(store, custody, submitter);
+    await expect(pipeline.publishDay(DAY0, publishMs)).rejects.toThrow(/transport failure/);
+    const artifact = await pipeline.publishDay(DAY0, publishMs); // retry after recovery
+    expect(await pipeline.verifyArtifact(artifact)).toBe(true);
+    expect(submitter.submitted.length).toBe(1);
+  });
+
+  it("below-k days are also published at most once", async () => {
+    const { store, custody } = newStore();
+    await addContributors(store, DAY0, "POSITIVE", 5);
+    const submitter = new CountingSubmitter();
+    const pipeline = new PublicationPipeline(store, custody, submitter);
+    await pipeline.publishDay(DAY0, publishMs); // all cells below k: nothing committed, day still published
+    expect(submitter.submitted.length).toBe(1);
+    await expect(pipeline.publishDay(DAY0, publishMs)).rejects.toThrow(AlreadyPublished);
+    expect(submitter.submitted.length).toBe(1);
   });
 });
 

@@ -9,21 +9,25 @@
  *   POST /v1/signals        ingest one coarsened submission (see types.ts)
  *   POST /v1/publish         publish one UTC day (server-enforced T+24h,
  *                            below-k suppression, one recordBatch per day,
- *                            signed reconciliation artifact)
+ *                            signed reconciliation artifact; replay-guarded —
+ *                            an already-published dayId is rejected 409)
  */
 
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { parseSubmission, RejectedSubmission, type SignalSubmission } from "./types.ts";
 import { SignalStore } from "./store.ts";
 import { Alerts, log } from "./log.ts";
-import { PublicationPipeline } from "./pipeline.ts";
+import { AlreadyPublished, NotYetPublishable, PublicationPipeline } from "./pipeline.ts";
 import { DryRunSubmitter, type ChainSubmitter } from "./chain.ts";
+import { MemoryPublicationLedger, type PublicationLedger } from "./ledger.ts";
 import type { KeyCustody } from "./keycustody.ts";
 
 export interface RelayerConfig {
   kThreshold?: number;
   delayMs?: number;
   chain?: ChainSubmitter;
+  /** Per-day publication ledger (F2); defaults to the process-local staging map. */
+  ledger?: PublicationLedger;
 }
 
 export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {}): {
@@ -31,12 +35,16 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
   store: SignalStore;
   pipeline: PublicationPipeline;
   alerts: Alerts;
+  ledger: PublicationLedger;
 } {
   const alerts = new Alerts();
+  // One ledger per relayer instance (per-day + per-instance scoping, F2/F3 design).
+  const ledger = cfg.ledger ?? new MemoryPublicationLedger();
   const store = new SignalStore((t, d, s) => custody.cellToken(t, d, s));
   const pipeline = new PublicationPipeline(store, custody, cfg.chain ?? new DryRunSubmitter(), {
     kThreshold: cfg.kThreshold,
     delayMs: cfg.delayMs,
+    ledger,
   });
 
   async function readJson(req: IncomingMessage, limit = 8_192): Promise<unknown> {
@@ -106,8 +114,13 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
           const artifact = await pipeline.publishDay(dayId, Date.now());
           return respond(200, artifact);
         } catch (e) {
-          if (e && typeof e === "object" && "dayId" in e) {
+          if (e instanceof NotYetPublishable) {
             return respond(409, { error: "not_yet_publishable", dayId });
+          }
+          if (e instanceof AlreadyPublished) {
+            // F2: replay of an already-published day — rejected before any chain effect.
+            log("server", "publish replay rejected", dayId);
+            return respond(409, { error: "already_published", dayId });
           }
           throw e;
         }
@@ -117,7 +130,7 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
       }
     })();
   });
-  return { server, store, pipeline, alerts };
+  return { server, store, pipeline, alerts, ledger };
 }
 
 /** CLI entrypoint (staging). */
