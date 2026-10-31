@@ -96,13 +96,18 @@ export interface RelayerConfig {
 export class RateShaper {
   private readonly buckets = new Map<string, { tokens: number; lastMs: number }>();
   private readonly perMin: number;
+  private readonly maxBuckets: number;
+  private readonly idleTtlMs: number;
   private nextSweepMs = 0;
-  constructor(
-    perMin: number,
-    private readonly maxBuckets = 65_536,
-    private readonly idleTtlMs = 120_000,
-  ) {
+  // OBS-363 D5: plain fields assigned in the constructor body — NO TypeScript
+  // parameter properties anywhere in the entrypoint module graph. Node's
+  // strip-only TypeScript support (default on node >= 23.6 / >= 22.18) rejects
+  // parameter properties at boot, which crashed the production image
+  // (ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX).
+  constructor(perMin: number, maxBuckets = 65_536, idleTtlMs = 120_000) {
     this.perMin = perMin;
+    this.maxBuckets = maxBuckets;
+    this.idleTtlMs = idleTtlMs;
   }
   /** Number of tracked buckets (exposed for tests/ops visibility). */
   get bucketCount(): number {
@@ -179,6 +184,29 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
     return JSON.parse(Buffer.concat(chunks).toString("utf8"));
   }
 
+  /**
+   * OBS-363 D1: readJson sits INSIDE the reject-and-alert path. An oversized
+   * body (size guard) and malformed JSON (JSON.parse SyntaxError) are
+   * content-bearing rejections on the privacy control path: respond 413/400
+   * respectively and raise `malformed_submission` — never a silent 500.
+   */
+  async function readJsonGuarded(
+    req: IncomingMessage,
+  ): Promise<{ ok: true; value: unknown } | { ok: false; code: number; error: string }> {
+    try {
+      return { ok: true, value: await readJson(req) };
+    } catch (e) {
+      if (e instanceof RejectedSubmission) {
+        // Only the size guard throws this before parse: body over the limit.
+        return { ok: false, code: 413, error: "payload_too_large" };
+      }
+      if (e instanceof SyntaxError) {
+        return { ok: false, code: 400, error: "malformed_json" };
+      }
+      throw e;
+    }
+  }
+
   const server = createServer((req, res) => {
     void (async () => {
       const respond = (code: number, body: unknown) => {
@@ -234,10 +262,15 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
               return respond(429, { error: "rate_limited" });
             }
           }
-          const raw = await readJson(req);
+          const read = await readJsonGuarded(req);
+          if (!read.ok) {
+            // D1: reject-and-alert on any content-bearing body problem.
+            alerts.raise("malformed_submission", `body rejected: ${read.error}`, Date.now());
+            return respond(read.code, { error: read.error });
+          }
           let submission: SignalSubmission;
           try {
-            const parsed = parseSubmission(raw, Date.now());
+            const parsed = parseSubmission(read.value, Date.now());
             // Payload minimization: unexpected fields are content-bearing by
             // default — REJECT AND ALERT, never log the offending fields.
             if (parsed.unexpected.length > 0) {
@@ -272,7 +305,13 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
           return respond(202, { ok: true });
         }
         // POST /v1/publish { "dayId": N }
-        const raw = (await readJson(req)) as Record<string, unknown>;
+        const read = await readJsonGuarded(req);
+        if (!read.ok) {
+          // D1: same reject-and-alert contract on the publish path.
+          alerts.raise("malformed_submission", `body rejected: ${read.error}`, Date.now());
+          return respond(read.code, { error: read.error });
+        }
+        const raw = read.value as Record<string, unknown>;
         const dayId = raw?.dayId;
         if (typeof dayId !== "number" || !Number.isInteger(dayId) || dayId < 0) {
           return respond(400, { error: "bad_dayId" });

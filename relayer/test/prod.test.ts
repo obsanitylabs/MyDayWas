@@ -141,12 +141,12 @@ describe("OBS-313 D8: reconciliation monitor + alert sink", () => {
     const alerts = new Alerts((a) => sinkAlerts.push(a));
     const monitor = new ReconciliationMonitor(custody, alerts);
 
-    await expect(monitor.check(artifact)).resolves.toBe(true);
+    await expect(monitor.check(artifact)).resolves.toEqual({ status: "ok" });
     expect(sinkAlerts).toHaveLength(0);
 
     const tampered = { ...artifact, chain: { ...artifact.chain, recordBatch: { ...artifact.chain.recordBatch!, deltas: [999, 0, 0] as [number, number, number] } } };
     // tampered payload fails the signature check first
-    await expect(monitor.check(tampered)).resolves.toBe(false);
+    await expect(monitor.check(tampered)).resolves.toEqual({ status: "mismatch" });
     expect(sinkAlerts.map((a) => a.reason)).toContain("reconciliation_mismatch");
     // sink payload shape: {reason, raisedDay, detail} only
     expect(Object.keys(sinkAlerts[0]!).sort()).toEqual(["detail", "raisedDay", "reason"]);
@@ -159,17 +159,23 @@ describe("OBS-313 D8: reconciliation monitor + alert sink", () => {
     const rb = artifact.chain.recordBatch!;
     const recorded = async (dayId: number) => ({ dayId, deltas: rb.deltas });
     const monitor = new ReconciliationMonitor(custody, alerts, { recorded });
-    await expect(monitor.check(artifact)).resolves.toBe(true);
+    await expect(monitor.check(artifact)).resolves.toEqual({ status: "ok" });
 
     const wrong = new ReconciliationMonitor(custody, alerts, {
       recorded: async () => ({ dayId: rb.dayId, deltas: [rb.deltas[0] + 1, rb.deltas[1], rb.deltas[2]] as [number, number, number] }),
     });
-    await expect(wrong.check(artifact)).resolves.toBe(false);
+    await expect(wrong.check(artifact)).resolves.toEqual({ status: "mismatch" });
     expect(sinkAlerts.at(-1)?.detail).toMatch(/on-chain BatchRecorded counts differ/);
 
-    const missing = new ReconciliationMonitor(custody, alerts, { recorded: async () => null });
-    await expect(missing.check(artifact)).resolves.toBe(false);
-    expect(sinkAlerts.at(-1)?.detail).toMatch(/no on-chain counts recorded/);
+    // R-5: a day whose counts are still unreadable-without-error is PENDING,
+    // never a mismatch false alarm (covered fully in the R-5 describe below).
+    const missing = new ReconciliationMonitor(custody, alerts, {
+      recorded: async () => null,
+      poll: { attempts: 2, initialDelayMs: 1 },
+      sleep: async () => {},
+    });
+    await expect(missing.check(artifact)).resolves.toEqual({ status: "pending" });
+    expect(sinkAlerts.filter((a) => a.reason === "reconciliation_mismatch")).toHaveLength(1); // only the `wrong` one
   });
 
   it("a re-signed artifact with corrupted recordBatch internals still fails the internal diff", async () => {
@@ -181,8 +187,161 @@ describe("OBS-313 D8: reconciliation monitor + alert sink", () => {
     const bad = { ...rest, chain: { ...rest.chain, recordBatch: { ...rest.chain.recordBatch!, dayId: rest.chain.recordBatch!.dayId + 1 } } };
     // re-sign so the signature check PASSES and only the internal diff can catch it
     const badSigned = { ...bad, signature: await custody.signReconciliation(JSON.stringify(bad)) };
-    await expect(monitor.check(badSigned)).resolves.toBe(false);
+    await expect(monitor.check(badSigned)).resolves.toEqual({ status: "mismatch" });
     expect(sinkAlerts.at(-1)?.detail).toMatch(/dayId disagrees|publishedDelta|recordBatch/);
+  });
+});
+
+// ---- OBS-363 R-5: inclusion latency -> pending, never a false mismatch -------
+
+describe("OBS-363 R-5: reconciliation tolerates tx inclusion latency", () => {
+  const fastOpts = { poll: { attempts: 3, initialDelayMs: 1 }, sleep: async () => {} };
+
+  it("a publish whose tx is NOT yet included returns pending and raises NO reconciliation_mismatch", async () => {
+    const { artifact, custody } = await buildArtifact();
+    const sinkAlerts: Alert[] = [];
+    const alerts = new Alerts((a) => sinkAlerts.push(a));
+    // eth_sendRawTransaction returned, but the reader still sees pre-inclusion
+    // state (getCounts -> null) for the whole polling budget.
+    const monitor = new ReconciliationMonitor(custody, alerts, {
+      recorded: async () => null,
+      ...fastOpts,
+    });
+    await expect(monitor.check(artifact)).resolves.toEqual({ status: "pending" });
+    // The false-alarm path is gone: no mismatch alert was raised.
+    expect(sinkAlerts.filter((a) => a.reason === "reconciliation_mismatch")).toHaveLength(0);
+  });
+
+  it("polls with backoff: a read that lands after inclusion latency verifies ok (no alert)", async () => {
+    const { artifact, custody } = await buildArtifact();
+    const sinkAlerts: Alert[] = [];
+    const alerts = new Alerts((a) => sinkAlerts.push(a));
+    const rb = artifact.chain.recordBatch!;
+    let reads = 0;
+    const monitor = new ReconciliationMonitor(custody, alerts, {
+      // First two reads are pre-inclusion (null); the tx lands on read 3.
+      recorded: async (dayId) => {
+        reads++;
+        return reads < 3 ? null : { dayId, deltas: rb.deltas };
+      },
+      ...fastOpts,
+    });
+    await expect(monitor.check(artifact)).resolves.toEqual({ status: "ok" });
+    expect(reads).toBe(3);
+    expect(sinkAlerts).toHaveLength(0);
+  });
+
+  it("a GENUINE on-chain mismatch after inclusion still raises reconciliation_mismatch", async () => {
+    const { artifact, custody } = await buildArtifact();
+    const sinkAlerts: Alert[] = [];
+    const alerts = new Alerts((a) => sinkAlerts.push(a));
+    const rb = artifact.chain.recordBatch!;
+    const monitor = new ReconciliationMonitor(custody, alerts, {
+      // Included but wrong: the chain recorded different deltas than signed.
+      recorded: async (dayId) => ({ dayId, deltas: [rb.deltas[0] + 7, rb.deltas[1], rb.deltas[2]] as [number, number, number] }),
+      ...fastOpts,
+    });
+    await expect(monitor.check(artifact)).resolves.toEqual({ status: "mismatch" });
+    const raised = sinkAlerts.filter((a) => a.reason === "reconciliation_mismatch");
+    expect(raised).toHaveLength(1);
+    expect(raised[0]!.detail).toMatch(/on-chain BatchRecorded counts differ/);
+  });
+
+  it("a persistent reader failure is still a mismatch (reader-down is not inclusion latency)", async () => {
+    const { artifact, custody } = await buildArtifact();
+    const sinkAlerts: Alert[] = [];
+    const alerts = new Alerts((a) => sinkAlerts.push(a));
+    const monitor = new ReconciliationMonitor(custody, alerts, {
+      recorded: async () => {
+        throw new Error("rpc down");
+      },
+      ...fastOpts,
+    });
+    await expect(monitor.check(artifact)).resolves.toEqual({ status: "mismatch" });
+    expect(sinkAlerts.at(-1)?.detail).toMatch(/on-chain counts unreadable/);
+  });
+});
+
+// ---- OBS-363 D1: malformed/oversized bodies reject-and-alert (no 500) --------
+
+describe("OBS-363 D1: malformed and oversized bodies", () => {
+  async function boot() {
+    const custody = new LocalDevCustody();
+    const sink: Alert[] = [];
+    const { server } = createSignalServer(custody, {
+      alertSink: (a) => sink.push(a),
+      kThreshold: 1,
+      delayMs: 0,
+    });
+    const port = 18_098;
+    await new Promise<void>((r) => server.listen(port, () => r()));
+    return { server, sink, port };
+  }
+
+  async function postRaw(port: number, path: string, body: string): Promise<{ status: number; text: string }> {
+    const res = await fetch(`http://127.0.0.1:${port}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+    });
+    return { status: res.status, text: await res.text() };
+  }
+
+  it("malformed JSON on POST /v1/signals -> 400 + malformed_submission alert", async () => {
+    const { server, sink, port } = await boot();
+    try {
+      const res = await postRaw(port, "/v1/signals", "{not valid json");
+      expect(res.status).toBe(400);
+      expect(JSON.parse(res.text)).toEqual({ error: "malformed_json" });
+      const raised = sink.filter((a) => a.reason === "malformed_submission");
+      expect(raised).toHaveLength(1);
+      expect(Object.keys(raised[0]!).sort()).toEqual(["detail", "raisedDay", "reason"]);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("oversized body (>8 KiB) on POST /v1/signals -> 413 + malformed_submission alert", async () => {
+    const { server, sink, port } = await boot();
+    try {
+      const big = JSON.stringify({
+        v: 1,
+        sentiment: "NEUTRAL",
+        dayId: 1,
+        contributorToken: "t".repeat(9_000), // valid JSON, > 8_192 bytes
+      });
+      const res = await postRaw(port, "/v1/signals", big);
+      expect(res.status).toBe(413);
+      expect(JSON.parse(res.text)).toEqual({ error: "payload_too_large" });
+      const raised = sink.filter((a) => a.reason === "malformed_submission");
+      expect(raised).toHaveLength(1);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("malformed JSON on POST /v1/publish -> 400 + alert (same contract on the publish path)", async () => {
+    const { server, sink, port } = await boot();
+    try {
+      const res = await postRaw(port, "/v1/publish", "]]not json[[");
+      expect(res.status).toBe(400);
+      expect(JSON.parse(res.text)).toEqual({ error: "malformed_json" });
+      expect(sink.filter((a) => a.reason === "malformed_submission")).toHaveLength(1);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("oversized body on POST /v1/publish -> 413 + alert", async () => {
+    const { server, sink, port } = await boot();
+    try {
+      const res = await postRaw(port, "/v1/publish", `{"dayId": 0, "pad": "${"x".repeat(9_000)}"}`);
+      expect(res.status).toBe(413);
+      expect(JSON.parse(res.text)).toEqual({ error: "payload_too_large" });
+      expect(sink.filter((a) => a.reason === "malformed_submission")).toHaveLength(1);
+    } finally {
+      server.close();
+    }
   });
 });
 

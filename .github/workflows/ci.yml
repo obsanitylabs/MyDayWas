@@ -31,6 +31,9 @@ jobs:
 
   # D3: the production container image builds only if typecheck + the full
   # suite pass inside the build stage (relayer/Dockerfile).
+  # OBS-363 D5: the image is also BOOTED and probed — a build that only
+  # compiles + tests cannot catch boot-time crashes (the parameter-property
+  # defect shipped exactly that way and the HEALTHCHECK could never pass).
   relayer-image:
     name: relayer (docker build incl. in-build typecheck + tests)
     runs-on: ubuntu-latest
@@ -42,6 +45,19 @@ jobs:
           context: relayer
           push: false
           tags: mydaywas-relayer:ci
+      - name: boot the image and probe GET /healthz (OBS-363 D5)
+        run: |
+          docker run -d --name relayer-smoke -p 127.0.0.1:8081:8081 mydaywas-relayer:ci
+          trap 'docker logs relayer-smoke 2>/dev/null; docker rm -f relayer-smoke >/dev/null 2>&1' EXIT
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8081/healthz >/dev/null; then
+              echo "GET /healthz -> 200 (image boots from the documented CMD)"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "FAIL: image never answered GET /healthz"
+          exit 1
 
   diary-app:
     name: diary app (typecheck + vitest + vite build)

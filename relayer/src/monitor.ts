@@ -15,6 +15,25 @@
  *     on-chain state must match the signed recordBatch. A recorded day with
  *     no on-chain counts — or a mismatch — is a data-integrity incident.
  *
+ *     OBS-363 R-5 (auditor OBS-237 `audit-rebaseline-record` §4): `eth_sendRawTransaction`
+ *     returns PRE-INCLUSION, so reading `getCounts` at `latest` immediately
+ *     after broadcast observes pre-inclusion state and produced a guaranteed
+ *     `reconciliation_mismatch` false alarm on nearly every real publish. The
+ *     diff now tolerates inclusion latency two ways:
+ *       - **poll with backoff**: re-read `getCounts` until it turns non-null
+ *         or the polling budget is exhausted (R-5 primary remedy);
+ *       - **pending verdict**: if the day's counts are still unreadable-with-
+ *         out-error when the budget runs out, the check resolves `pending` —
+ *         a distinct verdict that NEVER raises `reconciliation_mismatch`
+ *         (alert fatigue on the CISO detection path masks real incidents).
+ *     A null read inside the budget means "not yet included"; a reader
+ *     FAILURE is still reported (reader-down is not inclusion latency);
+ *     a non-null read that disagrees with the signed recordBatch raises
+ *     `reconciliation_mismatch` exactly as before.
+ *
+ *     Dry-run mode (no reader wired) is unaffected: signature + internal
+ *     diff only, verdict `ok`/`mismatch`.
+ *
  * Failures raise `reconciliation_mismatch` through the shared `Alerts`
  * instance, so the alert sink forwards `{reason, raisedDay, detail}` (never
  * payload data) to ops. The `pause()` brake path lives in
@@ -22,7 +41,7 @@
  */
 
 import { canonical, type ReconciliationArtifact } from "./pipeline.ts";
-import { Alerts } from "./log.ts";
+import { Alerts, log } from "./log.ts";
 import type { KeyCustody } from "./keycustody.ts";
 
 /** Authoritative on-chain recorded state for one day (getCounts diff half). */
@@ -34,21 +53,56 @@ export interface RecordedDayCounts {
 export interface ReconciliationMonitorOpts {
   /** On-chain reader (real-submitter mode). Unset (dry-run) = signature + internal diff only. */
   recorded?: (dayId: number) => Promise<RecordedDayCounts | null>;
+  /**
+   * R-5: inclusion-latency budget for the on-chain diff. `getCounts` is polled
+   * with exponential backoff until non-null, the attempt budget runs out, or
+   * a read lands. Defaults: 8 attempts, 250ms initial delay, x2 backoff
+   * capped at 4s — ~10.9s worst case, well past typical Sepolia inclusion.
+   */
+  poll?: {
+    attempts?: number;
+    initialDelayMs?: number;
+    backoffFactor?: number;
+    maxDelayMs?: number;
+  };
+  /** Injectable sleep (tests pass a no-op so backoff never stalls the suite). */
+  sleep?: (ms: number) => Promise<void>;
 }
 
+/** R-5: the outcome of one reconciliation check — `pending` is never a mismatch. */
+export type ReconciliationVerdict =
+  | { status: "ok" }
+  | { status: "mismatch" }
+  | { status: "pending" };
+
+const DEFAULT_POLL = { attempts: 8, initialDelayMs: 250, backoffFactor: 2, maxDelayMs: 4_000 } as const;
+
 export class ReconciliationMonitor {
-  constructor(
-    private readonly custody: KeyCustody,
-    private readonly alerts: Alerts,
-    private readonly opts: ReconciliationMonitorOpts = {},
-  ) {}
+  private readonly custody: KeyCustody;
+  private readonly alerts: Alerts;
+  private readonly opts: ReconciliationMonitorOpts;
+  // OBS-363 D5: plain fields assigned in the constructor body — parameter
+  // properties are rejected by Node's strip-only TypeScript mode and crash
+  // the documented `node src/server.ts` launch path.
+  constructor(custody: KeyCustody, alerts: Alerts, opts: ReconciliationMonitorOpts = {}) {
+    this.custody = custody;
+    this.alerts = alerts;
+    this.opts = opts;
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    if (this.opts.sleep) return this.opts.sleep(ms);
+    return new Promise<void>((r) => setTimeout(r, ms));
+  }
 
   /**
-   * Check one freshly published artifact. Returns true when every check
-   * passes; raises `reconciliation_mismatch` (per failed check, day
-   * resolution only) and returns false otherwise.
+   * Check one freshly published artifact. Returns the verdict — `ok` when
+   * every check passes, `mismatch` when a check failed (each failure raised
+   * `reconciliation_mismatch`, day resolution only), `pending` (R-5) when the
+   * signature + internal diff passed but the on-chain state was still
+   * pre-inclusion when the polling budget ran out (no alert raised).
    */
-  async check(artifact: ReconciliationArtifact, nowMs: number = Date.now()): Promise<boolean> {
+  async check(artifact: ReconciliationArtifact, nowMs: number = Date.now()): Promise<ReconciliationVerdict> {
     let ok = true;
     const fail = (detail: string) => {
       ok = false;
@@ -91,26 +145,46 @@ export class ReconciliationMonitor {
     }
 
     // 3. On-chain BatchRecorded diff (real mode): the chain must hold exactly
-    // what the artifact signed. A null reader result for a submitted day means
-    // the chain recorded nothing — integrity incident.
+    //    what the artifact signed. R-5: eth_sendRawTransaction returns
+    //    pre-inclusion, so a single immediate read false-alarmed on nearly
+    //    every real publish. Poll with backoff; a null read inside the
+    //    budget is inclusion latency -> `pending`, never `reconciliation_mismatch`.
     if (rb !== null && rb.hasPublishedCells && this.opts.recorded) {
+      const poll = { ...DEFAULT_POLL, ...this.opts.poll };
       let onChain: RecordedDayCounts | null = null;
-      try {
-        onChain = await this.opts.recorded(artifact.generatedForDay);
-      } catch {
-        fail("on-chain counts unreadable while checking a submitted day (reader failure)");
+      let readerFailed = false;
+      for (let attempt = 0; attempt < Math.max(1, poll.attempts); attempt++) {
+        if (attempt > 0) {
+          const delay = Math.min(poll.initialDelayMs * Math.pow(poll.backoffFactor, attempt - 1), poll.maxDelayMs);
+          await this.sleep(delay);
+        }
+        try {
+          onChain = await this.opts.recorded(artifact.generatedForDay);
+          readerFailed = false;
+        } catch {
+          readerFailed = true;
+          onChain = null;
+        }
+        if (onChain !== null) break;
       }
-      if (onChain === null) {
-        fail("no on-chain counts recorded for a day the signed artifact claims was submitted");
+      if (readerFailed) {
+        // Reader-down is not inclusion latency — surface it, same as pre-R-5.
+        fail("on-chain counts unreadable while checking a submitted day (reader failure)");
+      } else if (onChain === null) {
+        // Budget exhausted without a read: tx still unmined/reorged — PENDING,
+        // never a mismatch (R-5). Day resolution only; no payload data.
+        log("monitor", "reconciliation pending: tx not yet included after the polling budget", artifact.generatedForDay);
+        return ok ? { status: "pending" } : { status: "mismatch" };
       } else if (
         onChain.dayId !== rb.dayId ||
         onChain.deltas[0] !== rb.deltas[0] ||
         onChain.deltas[1] !== rb.deltas[1] ||
         onChain.deltas[2] !== rb.deltas[2]
       ) {
+        // Genuine on-chain disagreement with the signed recordBatch.
         fail("on-chain BatchRecorded counts differ from the signed reconciliation recordBatch");
       }
     }
-    return ok;
+    return ok ? { status: "ok" } : { status: "mismatch" };
   }
 }

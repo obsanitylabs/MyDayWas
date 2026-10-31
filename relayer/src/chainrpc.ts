@@ -47,10 +47,15 @@ export const SEPOLIA_CHAIN_ID = 11155111;
 /** JSON-RPC client (no deps). `fetchImpl` is injectable for tests. */
 export class JsonRpc {
   private nextId = 0;
-  constructor(
-    private readonly url: string,
-    private readonly fetchImpl: typeof fetch = fetch,
-  ) {}
+  private readonly url: string;
+  private readonly fetchImpl: typeof fetch;
+  // OBS-363 D5: plain fields assigned in the constructor body — parameter
+  // properties are rejected by Node's strip-only TypeScript mode (this module
+  // is in the entrypoint's dynamic-import graph and crashed the launch path).
+  constructor(url: string, fetchImpl: typeof fetch = fetch) {
+    this.url = url;
+    this.fetchImpl = fetchImpl;
+  }
   async call<T = string>(method: string, params: unknown[]): Promise<T> {
     const res = await this.fetchImpl(this.url, {
       method: "POST",
