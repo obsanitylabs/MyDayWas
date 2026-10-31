@@ -38,10 +38,27 @@ describe("shipped CSP permits the configured relayer origin (OBS-450)", () => {
     expect(sources).toContain(PRODUCTION_RELAYER_ORIGIN);
   });
 
-  it("connect-src does not wildcard open the policy", () => {
-    const sources = directive("connect-src").split(/\s+/);
+  // OBS-523 (S3 from the M6 QA verdict on OBS-231): presence checks alone are
+  // not enough — a policy that kept the relayer origin but also appended
+  // `data: blob:` (or widened to `http:`/`https:`/`*`) would still pass. These
+  // assertions are discriminating: they fail on the old `connect-src 'self'`
+  // policy AND on any `data:`/`blob:`/scheme/wildcard variant, and pass only on
+  // the shipped two-source allowlist.
+  it("connect-src does not wildcard or scheme-open the policy", () => {
+    const sources = directive("connect-src").split(/\s+/).filter(Boolean);
     expect(sources).not.toContain("*");
-    expect(sources).not.toContain("https:");
     expect(sources).not.toContain("http:");
+    expect(sources).not.toContain("https:");
+    expect(sources).not.toContain("data:");
+    expect(sources).not.toContain("blob:");
+  });
+
+  it("connect-src is exactly the allowlist ('self' + production relayer origin)", () => {
+    const sources = directive("connect-src").split(/\s+/).filter(Boolean);
+    expect(sources).toEqual(["'self'", PRODUCTION_RELAYER_ORIGIN]);
+    // No source may be a scheme/wildcard or an unlisted origin.
+    for (const src of sources) {
+      expect(["'self'", PRODUCTION_RELAYER_ORIGIN]).toContain(src);
+    }
   });
 });
