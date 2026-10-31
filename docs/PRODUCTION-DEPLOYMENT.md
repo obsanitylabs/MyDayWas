@@ -168,17 +168,34 @@ published as a single coordinated change after both sign-offs land. The
 widened CSP (`connect-src 'self' https://relayer.mydaywas.com`) that
 shipped on commit `b511b66` must not be published to `app.mydaywas.com`.
 
-**Scope:** This freeze applies to all publish paths to `app.mydaywas.com` and the landing CTA target:
+**Scope:** This freeze applies to all publish paths to `app.mydaywas.com`:
 - Netlify site `mydaywas-app` (branch-linked deploy / build hooks /
   continuous deploy settings / deploy API token or webhook)
 - CI workflow (any Netlify deploy step — currently none; app was deployed
   by hand from a digest build)
 - Local/scripted deploy paths (`deploy/README.md`, `docs/PRODUCTION-DEPLOYMENT.md`,
   and the Netlify CLI config in the workspace)
-- **Landing CTA target:** the `mydaywas` apex site and the `m4/signals-v1` -> `main` merge path (gate: OBS-227 go/no-go)
+- **The landing site and the `m4/signals-v1` → `main` merge path** — the
+  second half of the funnel, and the same hazard class. The apex landing
+  site (`mydaywas`, builds `main` → landing `dist`) currently serves the
+  `main` bundle `index-K5EuV2sz.js`, whose CTA is the resolving staging
+  URL `https://obsanitylabs.github.io/MyDayWas/recovered/`. On
+  `m4/signals-v1`, `src/config.js` has `APP_URL = 'https://app.mydaywas.com/'`
+  (PM-verified: `main` → staging URL, `m4/signals-v1` → `https://app.mydaywas.com/`;
+  `origin/main` is a direct ancestor of `origin/m4/signals-v1`). A merge of
+  `m4/signals-v1` → `main` followed by a landing deploy flips the public
+  CTA onto `app.mydaywas.com` — whose signals path is currently dead. The
+  freeze must cover it, with the OBS-227 go/no-go as the gate for the CTA
+  switch.
 
 **Deploy id:** The currently published deploy id is `6ae6223747930d130d68763f`
-(branch `m4/signals-v1`, deployed with the inert baseline `connect-src 'self'`).
-The widened CSP deploy `6ae6201d1d56cce297fe0ece` was rolled back and is not live.
+(branch `m4/signals-v1`, deployed with the inert baseline
+`connect-src 'self'`). The widened CSP commit `b511b66` was rolled back and
+is not live.
+
+**Commit status:** `c4e8be4` (the freeze notice) exists only in the local
+working tree; `origin/m4/signals-v1` is still `b511b66`. The freeze notice
+has not been pushed to the remote — a freeze notice that is not on the
+remote is not a control.
 
 **Status:** In progress — freeze documented; verification pending.
