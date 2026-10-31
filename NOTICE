@@ -1,0 +1,23 @@
+MyDayWas — Obsanity Labs
+Copyright (c) 2026 Obsanity Labs. All rights reserved.
+
+NOTICE
+
+This repository uses a split licensing posture (CEO decision, OBS-239):
+
+- Files under `contracts/` that carry the `SPDX-License-Identifier:
+  Apache-2.0` header are licensed under the Apache License, Version 2.0
+  ("Apache-2.0"). The full Apache-2.0 license text is provided in
+  `contracts/LICENSE`. Those files are the only open-licensed code in this
+  repository.
+
+- All other files in this repository — including `relayer/**`, `src/**`,
+  `netlify/**`, `public/**`, `diary/**`, and all other off-chain code,
+  configuration, documentation, and assets — are PROPRIETARY AND
+  CONFIDENTIAL, ALL RIGHTS RESERVED, and licensed under no open source
+  license (see the root `LICENSE` file). `relayer/**` sources remain
+  `UNLICENSED` / LicenseRef-Proprietary in their SPDX headers and must not
+  be re-licensed under an open license.
+
+This product includes software licensed under the Apache License, Version 2.0
+(Apache-2.0), available at https://www.apache.org/licenses/LICENSE-2.0.
