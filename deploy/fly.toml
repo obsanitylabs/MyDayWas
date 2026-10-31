@@ -4,8 +4,10 @@
 # PLACEHOLDERS ONLY — this file commits NO secrets and NO real app identity.
 # Provisioning/deployment stays GATED on the OBS-237 external written sign-off
 # (docs/PRODUCTION-DEPLOYMENT.md §6). Costs sit inside the CFO envelope
-# (OBS-167: $2,000/mo planned, $2,500/mo cap) — provisioning requires the
-# CFO/CEO approval routed through Approvals before any spend is committed.
+# (board-APPROVED lean envelope, OBS-357 `lean-envelope` rev 1: $9.44/mo
+# planned, $25.00/mo cap — approvals 063d6679 + a04b7903) — provisioning
+# requires the CFO/CEO approval routed through Approvals before any spend
+# is committed. The envelope is a ceiling, not a purchase.
 #
 # Usage (at provisioning, after gates clear):
 #   fly launch --config deploy/fly.toml --no-deploy   # or equivalent import

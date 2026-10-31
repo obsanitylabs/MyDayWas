@@ -29,20 +29,46 @@ Chosen over the CFO's other two models:
 - **Image:** `relayer/Dockerfile` — typecheck + full vitest run inside the
   build; non-root service user; `HEALTHCHECK` on `GET /healthz`.
 
-## Expected monthly cost (inside the CFO envelope, OBS-167: $2,000 planned / $2,500 cap)
+## Expected monthly cost (inside the board-APPROVED envelope: $9.44/mo planned, $25.00/mo cap)
 
-| Item | Est. |
+The board **rejected** the earlier two-thousand-per-month planned /
+two-and-a-half-thousand-per-month cap proposal (card `0801aba1`) on
+2026-10-31 and **approved** this quote-backed lean envelope (approvals
+`063d6679` + `a04b7903`, recorded in OBS-357 `lean-envelope` rev 1). The numbers
+below are the recorded quote set, not estimates.
+
+| Item | Quoted |
 | --- | --- |
-| 1× small container instance + volume (Fly.io class) | ~$10–30/mo |
-| Cloud KMS (two key objects + per-op; **not** dedicated HSM) | ~$2–10/mo |
-| Chain RPC (Sepolia public for staging; production L2 RPC paid tier — quote outstanding) | ~$0–100/mo |
-| Uptime/monitoring (healthz probe + alert sink) | ~$0–30/mo |
-| **Total** | **~$15–170/mo** — well inside the $2,000 planned envelope |
+| Fly.io relayer hosting (1 small container/VM + persistent volume) | $3.86/mo |
+| AWS KMS — 2 customer-managed keys (HMAC blinder + P-256 signer) | $4.01/mo |
+| Alchemy RPC (PAYG, inside the 30M CU free allowance) | $0.00/mo |
+| Better Stack monitoring/alerting (free tier + Slack incoming webhook) | $0.00/mo |
+| Local LM Studio inference (shared internal hardware) | $0.00/mo |
+| **Subtotal** | **$7.87/mo** |
+| + 20% contingency | **$9.44/mo planned** |
+| **Cap (board-approved ceiling)** | **$25.00/mo** |
 
-Dedicated HSM (~+$2,200/mo) is explicitly out of scope per the CFO analysis; 
-Cloud KMS meets the CISO checklist (see §custody below). These are list-price
-estimates, not vendor quotes — quotes are a procurement action and belong to
-the CFO (see `docs/PRODUCTION-DEPLOYMENT.md` §5).
+### Named exclusions (NOT in the number — each needs a fresh board decision)
+
+- Dedicated HSM (~$2,100–2,400/mo)
+- L1 chain (+$150–750/mo)
+- Live curated partner network (+$1,000–2,500/mo)
+- Better Stack paid Responder seat (+$34/mo)
+- Any external inference API
+- Anything outside the five quoted lines above (L2 gas, app hosting,
+  domain/email, support/ops, audits, legal, taxes, salaries, marketing)
+
+### Shape the approved envelope assumes
+
+**L2 only** (no L1), **Cloud KMS** (no dedicated HSM), **stub-only partner
+network**, **local LM Studio** inference, **1,000 MAU**, and a single
+**container/VM relayer + persistent local volume** — exactly the model chosen
+above. The audit-vendor cost is also a named exclusion of this envelope
+(separate CFO-routed path).
+
+**No procurement, no vendor commitment until a signed quote is in place** —
+the envelope is a ceiling, not a purchase; provisioning stays gated on the
+OBS-237 external written sign-off (see `docs/PRODUCTION-DEPLOYMENT.md` §5/§6).
 
 ## Custody (per `docs/PRODUCTION-CHECKLIST.md` §1)
 

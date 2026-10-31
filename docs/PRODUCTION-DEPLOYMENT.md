@@ -21,8 +21,9 @@ Chosen over serverless (option 1) and managed automation (option 3):
   sessions and the day-over-day custody-usage/Sybil baselines
   (`CustodyUsageMonitor`, `SybilEarlyWarning`) in ways per-request cold starts
   would not.
-- **Fixed cost** ~$15–40/mo (CFO range) fits the approved envelope
-  ($2,000/mo planned, $2,500/mo cap — OBS-167) with margin; managed relayer
+- **Fixed cost** ($3.86/mo quoted for the relayer host, inside the
+  board-approved lean envelope — $9.44/mo planned, $25.00/mo cap; approvals
+  `063d6679` + `a04b7903`, OBS-357 `lean-envelope` rev 1) with margin; managed relayer
   (Gelato/Chainlink) forfeits control of the submitter + signed reconciliation
   artifact path that OBS-237 is auditing.
 
@@ -32,9 +33,10 @@ with a persistent volume, behind a TLS-terminating LB honoring
 
 ### 1.2 Custody: **Cloud KMS** (not dedicated HSM) for the beta
 
-Per CFO analysis (OBS-167 §4): Cloud KMS (~$2–10/mo keys + per-op) meets the
-CISO checklist; dedicated HSM (~$2,100–2,300/mo) only if a mainnet decision
-demands it. Two key objects per `docs/PRODUCTION-CHECKLIST.md` §1:
+Cloud KMS (quoted **$4.01/mo** for the two customer-managed keys —
+board-approved lean envelope, approvals `063d6679` + `a04b7903`) meets the
+CISO checklist; dedicated HSM (~$2,100–2,300/mo) is a **named exclusion** of
+the envelope and needs a fresh board decision. Two key objects per `docs/PRODUCTION-CHECKLIST.md` §1:
 `<provider>/blinder/vN#…` and `<provider>/signer/vN#…`, least-privilege IAM
 (`sign`/`mac-generate` on exactly those two objects).
 
@@ -120,12 +122,29 @@ Full contract + injection paths: `relayer/.env.production.example` and
   against `0xEdeAC98…5f35C` before production cutover; record tx hashes +
   timings as the rehearsal artifact on OBS-264.
 
-## 5. Vendor quotes — outstanding (capture before provisioning)
+## 5. Vendor quotes — recorded (OBS-357 `lean-envelope` rev 1)
 
-Per OBS-167 these are list-price estimates, not quotes. Outstanding quotes to
-capture within the envelope: RPC paid tier (Alchemy/Infura/QuickNode), Cloud
-KMS (AWS/GCP), monitoring/observability (Sentry/uptime), inference (if
-external fallback used). Quotes are a procurement action and require the CFO.
+The five production lines are **already quoted** (vendor + list price, board
+approvals `063d6679` + `a04b7903`, envelope **$9.44/mo planned / $25.00/mo
+cap**):
+
+| Line | Vendor | Quoted |
+| --- | --- | --- |
+| Relayer hosting (1 container/VM + persistent volume) | Fly.io | $3.86/mo |
+| KMS (2 customer-managed keys: HMAC blinder + P-256 signer) | AWS | $4.01/mo |
+| Chain RPC (PAYG, inside the 30M CU free allowance) | Alchemy | $0.00/mo |
+| Monitoring/alerting (free tier + Slack incoming webhook) | Better Stack | $0.00/mo |
+| Inference (local LM Studio on shared internal hardware) | internal | $0.00/mo |
+| **Subtotal** | | **$7.87/mo** |
+| **Planned (subtotal + 20% contingency) / cap** | | **$9.44/mo / $25.00/mo** |
+
+**Named exclusions — each requires a fresh board decision before any spend:**
+dedicated HSM (~$2,100–2,400/mo), L1 chain (+$150–750/mo), live curated partner
+network (+$1,000–2,500/mo), Better Stack paid Responder seat (+$34/mo), any
+external inference API, and anything outside the five quoted lines above (L2
+gas, app hosting, domain/email, support/ops, audits, legal, taxes, salaries,
+marketing). The envelope is a **ceiling, not a purchase** — no procurement, no
+vendor commitment until a signed quote is in place.
 
 ## 6. Gates (hard)
 
