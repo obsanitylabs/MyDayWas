@@ -7,7 +7,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "start": "node --experimental-transform-types --no-warnings src/server.ts"
+    "start": "node --no-warnings src/server.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

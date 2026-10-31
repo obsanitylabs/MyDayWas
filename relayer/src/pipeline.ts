@@ -5,7 +5,7 @@
  */
 
 import { MS_PER_DAY, SENTIMENTS, type Sentiment } from "./types.ts";
-import type { SignalStore } from "./store.ts";
+import type { SignalStoreCore } from "./store.ts";
 import type { KeyCustody } from "./keycustody.ts";
 import type { ChainSubmitter, RecordBatch } from "./chain.ts";
 import { log } from "./log.ts";
@@ -67,14 +67,14 @@ export function publishableAt(dayId: number): number {
 }
 
 export class PublicationPipeline {
-  private readonly store: SignalStore;
+  private readonly store: SignalStoreCore;
   private readonly custody: KeyCustody;
   private readonly chain: ChainSubmitter;
   private readonly ledger: PublicationLedger;
   private readonly opts: { kThreshold?: number; delayMs?: number };
 
   constructor(
-    store: SignalStore,
+    store: SignalStoreCore,
     custody: KeyCustody,
     chain: ChainSubmitter,
     opts: { kThreshold?: number; delayMs?: number; ledger?: PublicationLedger } = {},

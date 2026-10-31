@@ -15,11 +15,12 @@
 
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { parseSubmission, RejectedSubmission, type SignalSubmission } from "./types.ts";
-import { SignalStore } from "./store.ts";
+import { SignalStore, type SignalStoreCore } from "./store.ts";
 import { Alerts, log } from "./log.ts";
 import { AlreadyPublished, NotYetPublishable, PublicationPipeline } from "./pipeline.ts";
 import { DryRunSubmitter, type ChainSubmitter } from "./chain.ts";
 import { MemoryPublicationLedger, type PublicationLedger } from "./ledger.ts";
+import { DurableSignalStore, SqlitePublicationLedger } from "./durable.ts";
 import type { KeyCustody } from "./keycustody.ts";
 
 export interface RelayerConfig {
@@ -28,11 +29,13 @@ export interface RelayerConfig {
   chain?: ChainSubmitter;
   /** Per-day publication ledger (F2); defaults to the process-local staging map. */
   ledger?: PublicationLedger;
+  /** Signal store (F3); defaults to the process-local staging store. */
+  store?: SignalStoreCore;
 }
 
 export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {}): {
   server: Server;
-  store: SignalStore;
+  store: SignalStoreCore;
   pipeline: PublicationPipeline;
   alerts: Alerts;
   ledger: PublicationLedger;
@@ -40,7 +43,7 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
   const alerts = new Alerts();
   // One ledger per relayer instance (per-day + per-instance scoping, F2/F3 design).
   const ledger = cfg.ledger ?? new MemoryPublicationLedger();
-  const store = new SignalStore((t, d, s) => custody.cellToken(t, d, s));
+  const store = cfg.store ?? new SignalStore((t, d, s) => custody.cellToken(t, d, s));
   const pipeline = new PublicationPipeline(store, custody, cfg.chain ?? new DryRunSubmitter(), {
     kThreshold: cfg.kThreshold,
     delayMs: cfg.delayMs,
@@ -136,9 +139,25 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
 /** CLI entrypoint (staging). */
 if (process.argv[1] && process.argv[1].endsWith("server.ts")) {
   const { LocalDevCustody } = await import("./keycustody.ts");
-  const { server } = createSignalServer(new LocalDevCustody());
+  const custody = new LocalDevCustody();
+  // F3 (OBS-228): RELAYER_DB_PATH switches the relayer onto the durable
+  // SQLite backend (restart- + multi-instance-safe ledger and store, shared
+  // atomic new-account counter). Unset = process-local staging (DryRun-safe).
+  const dbPath = process.env.RELAYER_DB_PATH;
+  const cfg: RelayerConfig = dbPath
+    ? {
+        ledger: new SqlitePublicationLedger(dbPath),
+        store: new DurableSignalStore(dbPath, (t, d, s) => custody.cellToken(t, d, s)),
+      }
+    : {};
+  const { server } = createSignalServer(custody, cfg);
   const port = Number(process.env.RELAYER_PORT ?? 8081);
   server.listen(port, () => {
-    log("server", "signal relayer listening (staging; chain submitter is dry-run pending Chief Auditor review)");
+    log(
+      "server",
+      dbPath
+        ? "signal relayer listening (durable F3 ledger/store; chain submitter is dry-run pending Chief Auditor review)"
+        : "signal relayer listening (staging; chain submitter is dry-run pending Chief Auditor review)",
+    );
   });
 }

@@ -39,7 +39,22 @@ export interface CellPurge {
   purgedAtMs: number;
 }
 
-export class SignalStore {
+/**
+ * Store surface consumed by the pipeline/server. Staging uses the in-memory
+ * `SignalStore` (process-local by design); production/F3 uses a durable
+ * backend (`durable.ts`) implementing the same surface so replay-prevention
+ * state (first-seen markers, new-account counts, per-cell blinded tokens)
+ * survives restarts and is shared atomically across relayer instances.
+ */
+export interface SignalStoreCore {
+  /** Record one accepted submission into its cell, enforcing the new-account rate limit. */
+  record(sub: SignalSubmission, nowMs: number): Promise<{ newContributor: boolean }>;
+  distinctContributors(dayId: number, sentiment: Sentiment): number;
+  stats(dayId: number, sentiment: Sentiment): CellStats;
+  purge(nowMs?: number): CellPurge[];
+}
+
+export class SignalStore implements SignalStoreCore {
   /** cellKey = `${dayId}:${sentiment}` -> per-token submission count. */
   private readonly cells = new Map<string, Map<string, number>>();
   /** cellKey -> total submissions. */

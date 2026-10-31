@@ -15,3 +15,8 @@ dist
 /deploy.sh
 /PROMPTS.md
 /.claude
+
+# F3 durable relayer backend (local dev artifacts)
+*.db
+*.db-wal
+*.db-shm
