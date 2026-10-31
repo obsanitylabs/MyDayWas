@@ -2,9 +2,13 @@
 
 Status: service-layer items **implemented** on `m4/signals-v1` (see
 `relayer/src/keycustody.ts`, `relayer/src/sybil.ts`, `relayer/src/server.ts`,
-`relayer/src/log.ts`; tests in `relayer/test/ops.test.ts`). Deployment-config
-items are marked **[deploy]** and belong to the production deploy runbook
-(OBS-228 deliverable 5). Custody handover items are marked **[CISO]**.
+`relayer/src/log.ts`, `relayer/src/monitor.ts`; tests in `relayer/test/ops.test.ts`,
+`relayer/test/prod.test.ts`). The **[deploy]** items are landed as code/config/docs
+by OBS-313 (`relayer/Dockerfile`, `.github/workflows/ci.yml`, `deploy/`,
+`docs/PRODUCTION-DEPLOY-MODEL.md`, `docs/PRODUCTION-IAM.md`,
+`docs/PRODUCTION-DOMAIN-DECISION.md`, `deploy/README.md`); actual provisioning
+and traffic are **[gated]** on the OBS-237 external written sign-off.
+Custody handover items are marked **[CISO]**.
 
 ## 1. Key custody — KMS/HSM with separate blinding vs signing keys
 
@@ -16,23 +20,55 @@ items are marked **[deploy]** and belong to the production deploy runbook
 - [x] **Versioned keyIds** (code): `blinderKeyId()` / `signerKeyId()` return
   `<provider>/<purpose>/v<n>#<fingerprint>` (e.g. `local-dev/blinder/v1#…`).
   Artifacts carry the signer keyId (`signedBy` in the reconciliation
-  artifact), so rotation is observable. **[deploy]** production KMS keyIds
-  follow the same `<provider>/<purpose>/v<n>` scheme.
+  artifact), so rotation is observable. **[deploy→landed]** production KMS
+  keyIds follow the same scheme: `KmsCustody` + the OBS-300 guard enforce it
+  (`relayer/src/keycustody.ts`, `relayer/src/server.ts`); the real key
+  objects are provisioned [gated] per `docs/PRODUCTION-DEPLOY-MODEL.md`.
 - [x] **Usage-anomaly monitoring** (code): `CustodyUsageMonitor` counts
   blinding/signing ops per UTC day and raises `custody_usage_anomaly` when
   today's count exceeds `spikeFactor ×` the recent day-over-day baseline.
-  **[deploy]** alert sink forwards it to ops (see §5).
-- [ ] **Rotation runbook** **[deploy/CISO]**: rotate blinder and signer keys
-  on distinct schedules (suggest: signer every 90 days, blinder every 180 —
-  blinder rotation invalidates first-seen markers, so rotate blinder only at
-  a UTC day boundary and accept one day of re-counted tokens, capped by the
-  shared atomic `MAX_NEW_ACCOUNTS_PER_UTC_DAY`). Old keyIds stay verifiable
-  for artifact retention (35-day cell retention; keep signer public keys
-  indefinitely for artifact verification).
-- [ ] **Stable blinder key** **[deploy]**: production KMS-backed custody must
-  use a stable blinder (CISO precondition from OBS-234): an ephemeral blinder
-  re-opens the new-account counter on every restart and weakens the Sybil
-  bound per restart.
+  **[deploy→landed]** alert sink forwards it to ops (see §5) — sink wiring is
+  live in code; the ops webhook URL itself is injected at deploy time
+  (`RELAYER_ALERT_WEBHOOK`).
+- [x] **Rotation runbook** **[deploy/CISO — runbook landed, execution gated]**:
+  rotate blinder and signer keys on **distinct schedules** —
+  **signer every 90 days**, **blinder every 180 days** (see §1a below).
+- [x] **Stable blinder key** **[deploy→landed]**: production custody is
+  `KmsCustody` over persistent provider-side key objects (CISO precondition
+  from OBS-234): the blinder survives restarts, so the new-account counter
+  is never re-opened by a reboot. The OBS-300 `custodyProfileError` guard
+  fails the process closed if a durable-profile (`RELAYER_DB_PATH`) boot is
+  configured with ephemeral `LocalDevCustody`.
+
+### 1a. Rotation runbook (OBS-87 §1 / OBS-313 D9)
+
+1. **Distinct schedules.** Signer: every **90 days**. Blinder: every **180
+   days**. Never rotate both in one maintenance window (observability: a
+   rotation event must attribute cleanly to one purpose).
+2. **Blinder rotation — UTC day boundary rule.** Blinder rotation
+   invalidates first-seen markers; rotate **only at a UTC day boundary**
+   (`00:00:00Z`) and accept **one day of re-counted tokens**, capped by the
+   shared atomic `MAX_NEW_ACCOUNTS_PER_UTC_DAY` (the durable counter
+   transaction re-applies the cap per day, so a rotation cannot be used to
+   push past the bound). Sequence: provision new key object → update
+   `RELAYER_KMS_BLINDER_KEY_ARN` + bump `RELAYER_KMS_BLINDER_VERSION` →
+   restart at the boundary → confirm `GET /healthz` shows the new
+   `blinderKeyId` (`…/v<n+1>#…`).
+3. **Signer rotation.** Any time (no counter interaction): provision →
+   update `RELAYER_KMS_SIGNER_KEY_ARN` + bump
+   `RELAYER_KMS_SIGNER_VERSION` → restart → publish-window verifies via the
+   reconciliation monitor. **Retain old signer public keys indefinitely**
+   (export via provider `GetPublicKey` before the old object is retired —
+   the only key-export permission in the IAM policy,
+   `docs/PRODUCTION-IAM.md` §1): previously published reconciliation
+   artifacts must stay verifiable for the 35-day cell retention and for any
+   later audit re-examination.
+4. **Observability.** New versioned keyIds appear in subsequent artifacts
+   (`signedBy`) and in `GET /healthz`. The reconciliation monitor
+   (`reconciliation_mismatch`, §5) flags any artifact signed by a keyId that
+   no longer verifies.
+5. **Old key objects:** disable (not delete) after one full retention cycle
+   (35 days) of clean telemetry; deletion only on CISO sign-off.
 
 ## 2. IAM — least privilege  [deploy]
 
@@ -73,11 +109,18 @@ items are marked **[deploy]** and belong to the production deploy runbook
   baseline, absolute floor) — an early signal of account farming toward the
   k-anonymity threshold, raised before the hard
   `MAX_NEW_ACCOUNTS_PER_UTC_DAY` cap trips. Deduped once per UTC day.
-- **[deploy]** monitor hook: the reconciliation-vs-`BatchRecorded` diff and
-  `verifyReconciliation` signature check are implemented and CI-covered; the
-  CISO OBS-235 approval **requires the production monitor wiring to be live
-  before production traffic** (it is the detection path for the accepted L2
-  residual risk).
+- **[deploy→landed]** monitor hook (CISO OBS-235 condition 1): the
+  `ReconciliationMonitor` (`relayer/src/monitor.ts`) runs on **every
+  publish** inside the server: (a) `verifyReconciliation` signature check,
+  (b) artifact-internal cells-vs-`recordBatch` diff, (c) on-chain
+  `BatchRecorded` diff via the `getCounts(uint32)` reader
+  (`relayer/src/chainrpc.ts`, real-submitter mode). Failures raise
+  `reconciliation_mismatch` through the shared alert sink
+  (`{reason, raisedDay, detail}` only) — covered by tests in
+  `relayer/test/prod.test.ts`. The CISO approval **requires this to be live
+  before production traffic** — it is the detection path for the accepted L2
+  residual risk. Code+config+test landed; the live wiring (real webhook +
+  real chain) activates at provisioning [gated on OBS-237].
 
 ## 6. Incident runbook — contract `pause()` brake
 

@@ -11,14 +11,17 @@
  *                            below-k suppression, one recordBatch per day,
  *                            signed reconciliation artifact; replay-guarded —
  *                            an already-published dayId is rejected 409)
- *   GET  /healthz           liveness probe for the production LB/uptime
- *                            monitor (OBS-264). Static response only; exempt
- *                            from the TLS-only edge so LB probes that arrive
- *                            over plain local HTTP succeed; carries no state,
- *                            no payload data, no secrets.
+ *   GET  /healthz           readiness for the production LB/uptime monitor
+ *                            (OBS-264 + OBS-313 D2): DB reachable, custody
+ *                            configured + keyIds present, submitter mode
+ *                            (dry-run/real), build revision + uptime. Static
+ *                            + config data only — no payload data, no
+ *                            secrets; TLS-exempt so LB probes over plain
+ *                            local HTTP succeed.
  */
 
 import { createServer, type IncomingMessage, type Server } from "node:http";
+import { createHash } from "node:crypto";
 import { parseSubmission, RejectedSubmission, type SignalSubmission } from "./types.ts";
 import { SignalStore, type SignalStoreCore } from "./store.ts";
 import { Alerts, log, type Alert } from "./log.ts";
@@ -27,6 +30,7 @@ import { DryRunSubmitter, type ChainSubmitter } from "./chain.ts";
 import { MemoryPublicationLedger, type PublicationLedger } from "./ledger.ts";
 import { DurableSignalStore, SqlitePublicationLedger } from "./durable.ts";
 import type { KeyCustody } from "./keycustody.ts";
+import { ReconciliationMonitor } from "./monitor.ts";
 import { SybilEarlyWarning } from "./sybil.ts";
 
 export interface RelayerConfig {
@@ -55,6 +59,24 @@ export interface RelayerConfig {
    * this process). Staging default false.
    */
   requireTls?: boolean;
+  /**
+   * OBS-313 D2: readiness data for GET /healthz. No secrets, no payload data.
+   * `dbProbe` is a cheap liveness query against the durable backend.
+   */
+  health?: {
+    buildRevision?: string;
+    dbBackend?: string;
+    dbProbe?: () => boolean;
+    startedAtMs?: number;
+  };
+  /**
+   * OBS-235 condition 1 / OBS-313 D8: when set, every published artifact runs
+   * through the reconciliation monitor (verifyReconciliation + internal diff +
+   * on-chain `BatchRecorded` diff via `recorded`) wired to the alert sink.
+   */
+  reconciliation?: {
+    recorded?: (dayId: number) => Promise<{ dayId: number; deltas: [number, number, number] } | null>;
+  };
 }
 
 /**
@@ -137,6 +159,12 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
   });
   // OBS-87: Sybil early warning on day-over-day new-account counts.
   const sybil = new SybilEarlyWarning(() => store.newAccountCounts(), alerts);
+  // OBS-235 condition 1 / OBS-313 D8: reconciliation monitor on the shared
+  // alerts instance, so every mismatch reaches the alert sink ({reason,
+  // raisedDay, detail} only).
+  const reconciliation =
+    cfg.reconciliation !== undefined ? new ReconciliationMonitor(custody, alerts, cfg.reconciliation) : undefined;
+  const startedAtMs = cfg.health?.startedAtMs ?? Date.now();
   // OBS-87: rate shaping on /v1/signals (off unless ratePerMin is set).
   const shaper = cfg.ratePerMin !== undefined ? new RateShaper(cfg.ratePerMin) : undefined;
 
@@ -157,10 +185,35 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
         res.writeHead(code, { "content-type": "application/json" });
         res.end(JSON.stringify(body));
       };
-      // OBS-264: production liveness probe. Exempt from requireTls (LB probes
-      // plain local HTTP without x-forwarded-proto) and from rate shaping.
+      // OBS-264 + OBS-313 D2: production readiness probe. Exempt from
+      // requireTls (LB probes plain local HTTP without x-forwarded-proto)
+      // and from rate shaping. Config + readiness data only — no payload
+      // data, no secrets (keyIds are versioned public fingerprints).
       if (req.method === "GET" && req.url === "/healthz") {
-        return respond(200, { ok: true, service: "mydaywas-relayer" });
+        let dbReachable = true;
+        if (cfg.health?.dbProbe) {
+          try {
+            dbReachable = cfg.health.dbProbe();
+          } catch {
+            dbReachable = false;
+          }
+        }
+        return respond(200, {
+          ok: true,
+          service: "mydaywas-relayer",
+          buildRevision: cfg.health?.buildRevision ?? "unversioned",
+          uptimeSec: Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000)),
+          submitter: (cfg.chain ?? new DryRunSubmitter()).name,
+          custody: {
+            provider: custody.provider,
+            blinderKeyId: await custody.blinderKeyId(),
+            signerKeyId: await custody.signerKeyId(),
+          },
+          db: {
+            backend: cfg.health?.dbBackend ?? "memory",
+            reachable: dbReachable,
+          },
+        });
       }
       if (req.method !== "POST" || ![ "/v1/signals", "/v1/publish" ].includes(req.url ?? "")) {
         return respond(404, { error: "not_found" });
@@ -226,6 +279,11 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
         }
         try {
           const artifact = await pipeline.publishDay(dayId, Date.now());
+          // OBS-235 condition 1 / OBS-313 D8: check every published artifact
+          // (signature + internal diff + on-chain BatchRecorded diff when a
+          // reader is configured). Mismatch alerts ops; the artifact itself
+          // is still returned (the alert is the detection path).
+          if (reconciliation) await reconciliation.check(artifact);
           return respond(200, artifact);
         } catch (e) {
           if (e instanceof NotYetPublishable) {
@@ -247,14 +305,104 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
   return { server, store, pipeline, alerts, ledger };
 }
 
+/**
+ * OBS-300 (checklist §1): production-profile custody guard — fail closed.
+ *
+ * The durable profile (`RELAYER_DB_PATH` set) is the production profile; a
+ * CISO precondition (OBS-234, checklist §1) is that production custody uses a
+ * STABLE, KMS-backed blinder: an ephemeral `LocalDevCustody` blinder re-opens
+ * the new-account counter on every restart and weakens the Sybil bound per
+ * restart. The guard makes ephemeral material unreachable in the production
+ * profile by construction — the process refuses to start rather than run it.
+ *
+ * `RELAYER_CUSTODY` modes:
+ *  - `local-dev` (default): staging profile only; refused with `RELAYER_DB_PATH` set.
+ *  - `kms`: production mode (OBS-313 D1). Requires `RELAYER_DB_PATH` +
+ *    `RELAYER_KMS_PROVIDER` + `RELAYER_KMS_BLINDER_KEY_ARN` +
+ *    `RELAYER_KMS_SIGNER_KEY_ARN` + `RELAYER_KMS_OPS_MODULE` (deploy-time
+ *    adapter implementing `KmsKeyOperations` against the provider SDK; key
+ *    material stays provider-side, injected via managed secret bindings).
+ *    KeyIds are versioned `<provider>/<purpose>/v<n>#<fingerprint>` per
+ *    checklist §1; the KMS custody implementation is
+ *    `KmsCustody` (relayer/src/keycustody.ts).
+ */
+export function custodyProfileError(env: {
+  dbPath?: string;
+  custodyMode?: string;
+  kmsProvider?: string;
+  kmsBlinderKeyArn?: string;
+  kmsSignerKeyArn?: string;
+  kmsOpsModule?: string;
+}): string | null {
+  const mode = env.custodyMode ?? "local-dev";
+  if (mode !== "local-dev" && mode !== "kms") {
+    return `RELAYER_CUSTODY must be "local-dev" or "kms" (got "${mode}")`;
+  }
+  if (mode === "local-dev") {
+    if (env.dbPath) {
+      return "production profile (RELAYER_DB_PATH) must not run on ephemeral LocalDevCustody — a restart re-opens the new-account counter and weakens the Sybil bound (CISO precondition, OBS-234); set RELAYER_CUSTODY=kms with the KMS-backed custody wiring";
+    }
+    return null;
+  }
+  if (!env.dbPath) {
+    return 'RELAYER_CUSTODY=kms requires the durable production profile (RELAYER_DB_PATH on a local volume)';
+  }
+  if (!env.kmsProvider || !env.kmsBlinderKeyArn || !env.kmsSignerKeyArn) {
+    return "kms custody requires RELAYER_KMS_PROVIDER, RELAYER_KMS_BLINDER_KEY_ARN and RELAYER_KMS_SIGNER_KEY_ARN (two provider-side key objects, checklist §1)";
+  }
+  if (!env.kmsOpsModule) {
+    return "kms custody requires RELAYER_KMS_OPS_MODULE (deploy-time adapter implementing KmsKeyOperations; never committed to the repo)";
+  }
+  return null;
+}
+
 /** CLI entrypoint (staging + production config switches). */
 if (process.argv[1] && process.argv[1].endsWith("server.ts")) {
-  const { LocalDevCustody, CustodyUsageMonitor } = await import("./keycustody.ts");
-  const localCustody = new LocalDevCustody();
+  const { LocalDevCustody, CustodyUsageMonitor, KmsCustody } = await import("./keycustody.ts");
+  const { AggregateSentimentSignalsSubmitter, DryRunSubmitter } = await import("./chain.ts");
+  const { RpcCountsReader, RpcLegacySender, MAINNET_CHAIN_ID } = await import("./chainrpc.ts");
   // F3 (OBS-228): RELAYER_DB_PATH switches the relayer onto the durable
   // SQLite backend (restart- + multi-instance-safe ledger and store, shared
   // atomic new-account counter). Unset = process-local staging (DryRun-safe).
   const dbPath = process.env.RELAYER_DB_PATH;
+  // OBS-300: fail closed before any custody/store construction.
+  const profileError = custodyProfileError({
+    dbPath,
+    custodyMode: process.env.RELAYER_CUSTODY,
+    kmsProvider: process.env.RELAYER_KMS_PROVIDER,
+    kmsBlinderKeyArn: process.env.RELAYER_KMS_BLINDER_KEY_ARN,
+    kmsSignerKeyArn: process.env.RELAYER_KMS_SIGNER_KEY_ARN,
+    kmsOpsModule: process.env.RELAYER_KMS_OPS_MODULE,
+  });
+  if (profileError) {
+    console.error(`[relayer:custody] refusing to start: ${profileError}`);
+    process.exit(1);
+  }
+  // ---- OBS-313 D1: custody provider (default = local dev) ------------------
+  const custodyMode = process.env.RELAYER_CUSTODY ?? "local-dev";
+  let innerCustody: import("./keycustody.ts").KeyCustody;
+  if (custodyMode === "kms") {
+    // Versioned keyIds (public identifiers; no material): fingerprint is a
+    // SHA-256 prefix of the public ARN, so rotation is observable in
+    // artifacts/logs while the key object stays provider-side.
+    const provider = process.env.RELAYER_KMS_PROVIDER as string;
+    const blinderArn = process.env.RELAYER_KMS_BLINDER_KEY_ARN as string;
+    const signerArn = process.env.RELAYER_KMS_SIGNER_KEY_ARN as string;
+    const keyIdOf = (purpose: "blinder" | "signer", arn: string) => {
+      const version = Number(process.env[`RELAYER_KMS_${purpose.toUpperCase()}_VERSION`] ?? 1);
+      const fp = createHash("sha256").update(arn).digest("hex").slice(0, 16);
+      return `${provider}/${purpose}/v${version}#${fp}`;
+    };
+    const opsModule = await import(process.env.RELAYER_KMS_OPS_MODULE as string);
+    const ops = (opsModule.default ?? opsModule) as import("./keycustody.ts").KmsKeyOperations;
+    innerCustody = new KmsCustody(provider, {
+      blinderKeyId: keyIdOf("blinder", blinderArn),
+      signerKeyId: keyIdOf("signer", signerArn),
+      ops,
+    });
+  } else {
+    innerCustody = new LocalDevCustody();
+  }
   // OBS-87: alert-sink wiring. RELAYER_ALERT_WEBHOOK forwards alert reason
   // codes + day resolution (never payload data) to the ops webhook (e.g. an
   // SNS/PagerDuty ingress). Unset = alerts stay in-process only.
@@ -273,20 +421,72 @@ if (process.argv[1] && process.argv[1].endsWith("server.ts")) {
     : undefined;
   // OBS-87: usage-anomaly monitoring on key usage (custody_usage_anomaly).
   // Shares the production alert sink so custody anomalies reach ops too.
-  const custody = new CustodyUsageMonitor(localCustody, new Alerts(alertSink));
+  const custody = new CustodyUsageMonitor(innerCustody, new Alerts(alertSink));
+
+  // ---- OBS-313 D1: real-submitter path selectable by configuration ---------
+  // DEFAULT = dry-run. The real cutover stays gated on the CISO re-verification
+  // of the real-submitter path (OBS-166) + the OBS-237 written sign-off.
+  // Mainnet (chain id 1) is refused unconditionally (OBS-86).
+  const submitterMode = process.env.RELAYER_SUBMITTER ?? "dry-run";
+  let chain: import("./chain.ts").ChainSubmitter = new DryRunSubmitter();
+  let recorded:
+    | ((dayId: number) => Promise<{ dayId: number; deltas: [number, number, number] } | null>)
+    | undefined;
+  if (submitterMode === "real") {
+    const expectedChainId = Number(process.env.RELAYER_CHAIN_ID ?? "");
+    if (!Number.isInteger(expectedChainId) || expectedChainId <= 0) {
+      console.error("real submitter requires RELAYER_CHAIN_ID (expected chain id; mainnet 1 is refused)");
+      process.exit(2);
+    }
+    if (expectedChainId === MAINNET_CHAIN_ID) {
+      console.error("refusing to start: RELAYER_CHAIN_ID=1 (mainnet) needs its own written sign-off (OBS-86)");
+      process.exit(2);
+    }
+    const rpcUrl = process.env.RELAYER_CHAIN_RPC ?? "";
+    const contractAddress = process.env.RELAYER_CHAIN_ADDRESS ?? "";
+    if (!rpcUrl || !/^0x[0-9a-fA-F]{40}$/.test(contractAddress)) {
+      console.error("real submitter requires RELAYER_CHAIN_RPC and a valid RELAYER_CHAIN_ADDRESS");
+      process.exit(2);
+    }
+    const sender = new RpcLegacySender({
+      rpcUrl,
+      expectedChainId,
+      eoaAddress: process.env.RELAYER_EOA_ADDRESS ?? "",
+      // Managed secret binding only; validated inside, never printed.
+      keyHex: process.env.RELAYER_EOA_SECRET_KEY ?? "",
+    });
+    chain = new AggregateSentimentSignalsSubmitter(contractAddress, (to, data) => sender.send(to, data));
+    // D8: on-chain BatchRecorded reader for the reconciliation monitor.
+    const reader = new RpcCountsReader({ rpcUrl, address: contractAddress, expectedChainId });
+    recorded = (dayId) => reader.recordedCounts(dayId);
+  } else if (submitterMode !== "dry-run") {
+    console.error(`unknown RELAYER_SUBMITTER: ${submitterMode} (expected "dry-run" or "real")`);
+    process.exit(2);
+  }
+
+  const durableStore = dbPath
+    ? new DurableSignalStore(dbPath, (t, d, s) => custody.cellToken(t, d, s))
+    : undefined;
   const cfg: RelayerConfig = {
-    ...(dbPath
-      ? {
-          ledger: new SqlitePublicationLedger(dbPath),
-          store: new DurableSignalStore(dbPath, (t, d, s) => custody.cellToken(t, d, s)),
-        }
-      : {}),
+    ...(dbPath ? { ledger: new SqlitePublicationLedger(dbPath), store: durableStore } : {}),
     // OBS-87: production config switches (all optional; staging defaults off).
     ratePerMin: process.env.RELAYER_RATE_PER_MIN !== undefined
       ? Number(process.env.RELAYER_RATE_PER_MIN)
       : undefined,
     requireTls: process.env.RELAYER_REQUIRE_TLS === "1",
     alertSink,
+    chain,
+    // D2: readiness surface. Build revision is the public git sha, injected
+    // by CI/deploy (no secrets).
+    health: {
+      buildRevision: process.env.RELAYER_BUILD_REVISION,
+      dbBackend: dbPath ? "sqlite" : "memory",
+      dbProbe: durableStore ? () => (durableStore.newAccountCounts(), true) : undefined,
+    },
+    // D8: reconciliation-vs-BatchRecorded diff wired to the alert sink
+    // (on-chain reader exists only in real mode; dry-run checks signature +
+    // internal consistency).
+    ...(recorded ? { reconciliation: { recorded } } : {}),
   };
   const { server } = createSignalServer(custody, cfg);
   const port = Number(process.env.RELAYER_PORT ?? 8081);
@@ -294,8 +494,8 @@ if (process.argv[1] && process.argv[1].endsWith("server.ts")) {
     log(
       "server",
       dbPath
-        ? "signal relayer listening (durable F3 ledger/store; chain submitter is dry-run pending Chief Auditor review)"
-        : "signal relayer listening (staging; chain submitter is dry-run pending Chief Auditor review)",
+        ? `signal relayer listening (durable F3 ledger/store; custody=${custodyMode}; submitter=${submitterMode})`
+        : `signal relayer listening (staging; custody=${custodyMode}; submitter=${submitterMode})`,
     );
   });
 }

@@ -1,0 +1,92 @@
+# MyDayWas CI (OBS-228 D5 / OBS-313 D3) — the repo's first CI workflow.
+# Builds + tests every component on push/PR. No secrets are available to CI:
+# the relayer production env contract is injected at deploy time, not here.
+
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  relayer:
+    name: relayer (typecheck + vitest)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22, 24]
+    defaults:
+      run:
+        working-directory: relayer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: relayer/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  # D3: the production container image builds only if typecheck + the full
+  # suite pass inside the build stage (relayer/Dockerfile).
+  relayer-image:
+    name: relayer (docker build incl. in-build typecheck + tests)
+    runs-on: ubuntu-latest
+    needs: relayer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/build-push-action@v6
+        with:
+          context: relayer
+          push: false
+          tags: mydaywas-relayer:ci
+
+  diary-app:
+    name: diary app (typecheck + vitest + vite build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: diary
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: diary/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  landing:
+    name: landing page (vite build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run build
+
+  contracts:
+    name: contracts (solc compile check)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: contracts/package-lock.json
+      - run: npm ci
+      # compile.mjs pins recordBatch selector 0f4d576c; any drift fails CI.
+      - run: node compile.mjs

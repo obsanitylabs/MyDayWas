@@ -14,6 +14,10 @@
  *  - Additional OBS-87 reasons: custody_usage_anomaly (blinding/signing op
  *    spike), sybil_early_warning (day-over-day new-account spike),
  *    rate_limited (per-IP rate shaping on /v1/signals).
+ *  - OBS-235 condition 1 / OBS-313 D8: reconciliation_mismatch (reconciliation
+ *    artifact signature failure or reconciliation-vs-`BatchRecorded` diff) —
+ *    the detection path for the accepted L2 residual risk; must be live
+ *    before production traffic.
  */
 
 export type AlertReason =
@@ -23,7 +27,8 @@ export type AlertReason =
   | "new_account_rate_limited"
   | "custody_usage_anomaly"
   | "sybil_early_warning"
-  | "rate_limited";
+  | "rate_limited"
+  | "reconciliation_mismatch";
 
 export interface Alert {
   reason: AlertReason;

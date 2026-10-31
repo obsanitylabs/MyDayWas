@@ -65,7 +65,16 @@ from the Paperclip secret store / provider secret manager, never committed.
 | `RELAYER_RATE_PER_MIN` | `60` | checklist §4 runbook default |
 | `RELAYER_ALERT_WEBHOOK` | ops SNS/PagerDuty ingress URL | secret store |
 | `RELAYER_DB_PATH` | local persistent volume path | checklist §2 |
+| `RELAYER_CUSTODY` | `kms` (+ `RELAYER_KMS_*` per `docs/PRODUCTION-IAM.md`) | config + secret store |
+| `RELAYER_SUBMITTER` | `dry-run` (default; real cutover CISO-gated) | config |
+| `RELAYER_CHAIN_RPC` / `RELAYER_CHAIN_ID` / `RELAYER_CHAIN_ADDRESS` | production L2 RPC + expected chain id + address | config (§1.3) |
+| `RELAYER_BUILD_REVISION` | git sha | CI/deploy |
 | `VITE_RELAYER_URL` (app build) | `https://relayer.mydaywas.com` | §1.4 |
+
+Full contract + injection paths: `relayer/.env.production.example` and
+`deploy/README.md`. Decision records: `docs/PRODUCTION-DEPLOY-MODEL.md`,
+`docs/PRODUCTION-DOMAIN-DECISION.md`; IAM policy:
+`docs/PRODUCTION-IAM.md`.
 
 ## 3. Runbook (deployment)
 
@@ -73,9 +82,12 @@ from the Paperclip secret store / provider secret manager, never committed.
    complete; CISO control sign-off (stage 6) complete. Abort if any missing.
 2. **Provision** hosting within the envelope; attach KMS key objects (§1.2);
    inject env from the secret store.
-3. **Deploy relayer**; `GET /healthz` returns `{"ok":true,"service":
-   "mydaywas-relayer"}` 200 over TLS via the LB; internal probe on plain HTTP
-   also 200 (healthz is TLS-exempt by design).
+3. **Deploy relayer**; `GET /healthz` returns 200 over TLS via the LB with
+   the readiness body (`docs/PRODUCTION-DEPLOYMENT.md` → OBS-313 D2):
+   `ok`, `service`, `buildRevision`, `uptimeSec`, `submitter` (dry-run/real),
+   `custody` (provider + versioned `blinderKeyId`/`signerKeyId`), `db`
+   (backend + reachable); internal probe on plain HTTP also 200 (healthz is
+   TLS-exempt by design). No secrets or payload data in the body.
 4. **Deploy contract** to the approved production chain via
    `contracts/deploy.mjs` (Sepolia-gated key path today; production chain per
    §1.3 written approval). Record address + tx + block in

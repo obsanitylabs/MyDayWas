@@ -123,6 +123,114 @@ export class CustodyUsageMonitor implements KeyCustody {
   }
 }
 
+/**
+ * Production KMS/HSM-backed custody (OBS-228 D5 / OBS-313 D1; OBS-87 §1 [deploy]).
+ *
+ * Key material NEVER crosses this boundary: the provider holds the key objects
+ * (HMAC key for blinding, asymmetric key for artifact signing) and `ops` performs
+ * every primitive provider-side (`mac` = e.g. AWS KMS GenerateMac, `sign` =
+ * KMS Sign, `verify` = KMS Verify). The relayer process only ever holds the
+ * VERSIONED keyIds (public identifiers + fingerprints, no material) and the
+ * returned macs/signatures.
+ *
+ * STABLE BLINDER (CISO precondition, OBS-234): the blinder key object is
+ * provider-side and persistent, so the same key material survives restarts —
+ * unlike `LocalDevCustody`, whose ephemeral blinder re-opens the new-account
+ * counter on every boot and weakens the Sybil bound. Blinding is deterministic
+ * per key object, so the same stored key material yields identical cell tokens
+ * across process restarts (covered by tests).
+ *
+ * The ops adapter is deploy-time configuration (env `RELAYER_KMS_OPS_MODULE`):
+ * a small module implementing `KmsKeyOperations` against the provider SDK.
+ * It is injected at deploy time so no provider SDK or credential ships in the
+ * repo; provider credentials reach the adapter via managed secret bindings,
+ * never via this file.
+ */
+export interface KmsKeyOperations {
+  /** HMAC over `message` with the provider-side BLINDER key object. Deterministic per key. */
+  mac(message: string): Promise<string>;
+  /** Sign `payload` with the provider-side SIGNER key object. */
+  sign(payload: string): Promise<string>;
+  /** Verify a signature against the provider-side signer public key. */
+  verify(payload: string, signature: string): Promise<boolean>;
+}
+
+/** Versioned keyId grammar (OBS-87): `<provider>/<purpose>/v<n>#<fingerprint>`. */
+export const VERSIONED_KEY_ID_RE = /^[A-Za-z0-9:_-]+\/(blinder|signer)\/v([0-9]+)#([0-9a-f]{8,})$/;
+
+/** Parse + validate a versioned keyId for the expected purpose (throws on anything else). */
+export function parseVersionedKeyId(
+  expectedPurpose: "blinder" | "signer",
+  keyId: string,
+): { provider: string; version: number; fingerprint: string } {
+  const m = VERSIONED_KEY_ID_RE.exec(keyId);
+  if (!m || m[1] !== expectedPurpose) {
+    throw new Error(`invalid ${expectedPurpose} keyId (expected <provider>/${expectedPurpose}/v<n>#<fingerprint>): ${keyId}`);
+  }
+  return { provider: (m[0] ?? "").split("/")[0] ?? "", version: Number(m[2] ?? "0"), fingerprint: m[3] ?? "" };
+}
+
+/** KMS/HSM-backed production custody. Blinder + signer are separate provider key objects. */
+export class KmsCustody implements KeyCustody {
+  readonly provider: string;
+  private readonly blinderId: string;
+  private readonly signerId: string;
+  private readonly ops: KmsKeyOperations;
+
+  constructor(
+    provider: string,
+    opts: {
+      blinderKeyId: string;
+      signerKeyId: string;
+      ops: KmsKeyOperations;
+    },
+  ) {
+    // One key object for both purposes is refused before any parsing (OBS-87).
+    if (opts.blinderKeyId === opts.signerKeyId) {
+      throw new Error("blinder and signer must be separate key objects (OBS-87: never one key for both purposes)");
+    }
+    // Versioned keyIds are validated up front so a misconfigured deploy fails
+    // at boot, not on the first signal (OBS-87 §1).
+    const blinder = parseVersionedKeyId("blinder", opts.blinderKeyId);
+    const signer = parseVersionedKeyId("signer", opts.signerKeyId);
+    if (blinder.provider !== provider || signer.provider !== provider) {
+      throw new Error(`keyId provider prefix does not match configured provider ${provider}`);
+    }
+    this.provider = provider;
+    this.blinderId = opts.blinderKeyId;
+    this.signerId = opts.signerKeyId;
+    this.ops = opts.ops;
+  }
+
+  async keyId(): Promise<string> {
+    return this.signerId;
+  }
+  async blinderKeyId(): Promise<string> {
+    return this.blinderId;
+  }
+  async signerKeyId(): Promise<string> {
+    return this.signerId;
+  }
+
+  async cellToken(contributorToken: string, dayId: number, sentiment: string): Promise<string> {
+    // Same message layout as LocalDevCustody so token semantics are identical;
+    // the HMAC itself is provider-side over the persistent blinder key object.
+    return this.ops.mac(`${dayId}|${sentiment}|${contributorToken}`);
+  }
+
+  async signReconciliation(payload: string): Promise<string> {
+    return this.ops.sign(payload);
+  }
+
+  async verifyReconciliation(payload: string, signature: string): Promise<boolean> {
+    try {
+      return await this.ops.verify(payload, signature);
+    } catch {
+      return false;
+    }
+  }
+}
+
 export class LocalDevCustody implements KeyCustody {
   readonly provider = "local-dev";
   private readonly blinder: Buffer;

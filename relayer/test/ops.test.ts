@@ -254,8 +254,14 @@ describe("OBS-264: production liveness probe", () => {
     try {
       const res = await fetch(`http://127.0.0.1:${port}/healthz`);
       expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body).toEqual({ ok: true, service: "mydaywas-relayer" });
+      const body = (await res.json()) as Record<string, any>;
+      // OBS-313 D2: readiness body (liveness core + custody/submitter/db state).
+      expect(body.ok).toBe(true);
+      expect(body.service).toBe("mydaywas-relayer");
+      expect(typeof body.uptimeSec).toBe("number");
+      expect(body.submitter).toMatch(/^dry-run/);
+      expect(body.custody.blinderKeyId).toMatch(/^local-dev\/blinder\/v1#/);
+      expect(body.db.reachable).toBe(true);
     } finally {
       server.close();
     }
