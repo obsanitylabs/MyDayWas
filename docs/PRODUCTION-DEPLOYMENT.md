@@ -193,9 +193,12 @@ shipped on commit `b511b66` must not be published to `app.mydaywas.com`.
 `connect-src 'self'`). The widened CSP deploy `6ae6201d1d56cce297fe0ece` was
 rolled back and is not live.
 
-**Commit status:** `c4e8be4` (the freeze notice) exists only in the local
-working tree; `origin/m4/signals-v1` is still `b511b66`. The freeze notice
-has not been pushed to the remote — a freeze notice that is not on the
-remote is not a control.
+**Commit status:** The freeze notice is committed and pushed to `origin/m4/signals-v1`
+(tip `22835cf`; any later sha pushed with the same tip). The notice is live in
+`docs/PRODUCTION-DEPLOYMENT.md` section "Deploy-freeze notice (OBS-511)" and
+referenced from `deploy/README.md`.
 
-**Status:** In progress — freeze documented; verification pending.
+**Status:** Freeze in effect and verified; live app confirmed inert
+(`connect-src 'self'`); relayer host absent (NXDOMAIN) by design; the widened
+CSP and the relayer DNS/LB land as one coordinated change after OBS-237 +
+OBS-301 sign-offs, with the OBS-227 go/no-go gating the landing CTA switch.
