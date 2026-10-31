@@ -160,7 +160,7 @@ vendor commitment until a signed quote is in place.
 **Freeze:** No deploy of the diary app to `app.mydaywas.com` is permitted
 until the following sign-offs land:
 1. **OBS-237** — external written sign-off (launch-readiness, OBS-227 §2.4)
-2. **OBS-301** — stage-6 CISO control sign-off (OBS-236)
+2. **OBS-301** — stage-6 CISO control sign-off
 
 **Superseding coordinated change:** The CSP allow-list (connect-src
 'self' + the production relayer origin) and the relayer DNS/LB must be
@@ -168,15 +168,17 @@ published as a single coordinated change after both sign-offs land. The
 widened CSP (`connect-src 'self' https://relayer.mydaywas.com`) that
 shipped on commit `b511b66` must not be published to `app.mydaywas.com`.
 
-**Scope:** This freeze applies to all publish paths to `app.mydaywas.com`:
+**Scope:** This freeze applies to all publish paths to `app.mydaywas.com` and the landing CTA target:
 - Netlify site `mydaywas-app` (branch-linked deploy / build hooks /
   continuous deploy settings / deploy API token or webhook)
 - CI workflow (any Netlify deploy step — currently none; app was deployed
   by hand from a digest build)
 - Local/scripted deploy paths (`deploy/README.md`, `docs/PRODUCTION-DEPLOYMENT.md`,
   and the Netlify CLI config in the workspace)
+- **Landing CTA target:** the `mydaywas` apex site and the `m4/signals-v1` -> `main` merge path (gate: OBS-227 go/no-go)
 
-**Deploy id:** The currently published deploy id is `b511b66`
-(branch `m4/signals-v1`, deployed with the widened CSP).
+**Deploy id:** The currently published deploy id is `6ae6223747930d130d68763f`
+(branch `m4/signals-v1`, deployed with the inert baseline `connect-src 'self'`).
+The widened CSP deploy `6ae6201d1d56cce297fe0ece` was rolled back and is not live.
 
 **Status:** In progress — freeze documented; verification pending.
