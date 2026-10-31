@@ -126,15 +126,23 @@ Custody handover items are marked **[CISO]**.
 
 On confirmed relayer/contract compromise or data-integrity incident:
 
-1. **Brake first:** call `AggregateSentimentSignals.pause()` (`onlyOwner`)
-   — `recordBatch` reverts while paused; view functions stay readable.
-   Verify `paused == true` on-chain.
+1. **Brake first:** the CISO (contract owner key is in CISO custody per §7 /
+   OBS-236) calls `AggregateSentimentSignals.pause()` (`onlyOwner`) on
+   Sepolia at `0xEdeAC98…5f35C` and **captures the tx hash**. Confirm on
+   chain: `paused()` returns `true`; a `recordBatch` attempt reverts
+   (`Pausable`), while view functions (`getCounts` selector `a6b33ea5`,
+   `verifyReconciliation`) stay readable. Reference secret names only —
+   the owner key and relayer EOA secret never appear in this repo.
 2. **Rotate:** rotate the affected custody key(s) per §1; if the relayer EOA
    or contract owner key is implicated, follow the CISO custody handover.
    (Rotation runbook in §1; new keyIds appear in subsequent artifacts.)
 3. **Preserve:** export the alert log (`alerts.list()`), the durable store
    (`dayId → counts` only — no content exists to preserve), and the affected
-   reconciliation artifacts for the Chief Auditor.
+   reconciliation artifacts for the Chief Auditor. **Storage locations:**
+   alert log + store snapshots and reconciliation artifacts land in the ops
+   evidence bundle (ops volume path per `deploy/README.md` incident section;
+   names only, no secret values), with the paused-state tx hash recorded in
+   the incident ticket.
 4. **Notify:** page ops via the alert sink; escalate security impact to CISO
    immediately; contract/chain impact to the Chief Auditor.
 5. **Resume:** `unpause()` only after CISO + Chief Auditor sign-off on the
