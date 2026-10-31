@@ -8,7 +8,7 @@ import { LocalDevCustody, CustodyUsageMonitor } from "../src/keycustody.ts";
 import { Alerts } from "../src/log.ts";
 import { SignalStore } from "../src/store.ts";
 import { SybilEarlyWarning } from "../src/sybil.ts";
-import { createSignalServer } from "../src/server.ts";
+import { createSignalServer, RateShaper } from "../src/server.ts";
 import { MS_PER_DAY, type Sentiment } from "../src/types.ts";
 
 const DAY0 = 21_000;
@@ -184,6 +184,38 @@ describe("OBS-87: rate shaping on /v1/signals", () => {
     }
   });
 });
+
+describe("OBS-245 / audit F-1: RateShaper bounded map", () => {
+  it("evicts buckets idle beyond the TTL and restores a fresh full bucket", () => {
+    const shaper = new RateShaper(5, 65_536, 120_000);
+    const t0 = 1_000_000;
+    expect(shaper.allow("1.1.1.1", t0)).toBe(true);
+    expect(shaper.allow("2.2.2.2", t0)).toBe(true);
+    expect(shaper.bucketCount).toBe(2);
+    // Beyond the TTL: the sweep (amortized, next window) drops idle entries.
+    const t1 = t0 + 121_000;
+    expect(shaper.allow("3.3.3.3", t1)).toBe(true);
+    // 3.3.3.3 exists; 1.1.1.1/2.2.2.2 were swept at the start of this window.
+    expect(shaper.bucketCount).toBe(1);
+    // Evicted IP returns to a fresh bucket: full refill (semantically neutral).
+    expect(shaper.allow("1.1.1.1", t1)).toBe(true);
+    expect(shaper.bucketCount).toBe(2);
+  });
+
+  it("caps total buckets, evicting the idlest entry", () => {
+    const shaper = new RateShaper(5, 3, 120_000);
+    const t0 = 2_000_000;
+    expect(shaper.allow("a", t0)).toBe(true);
+    expect(shaper.allow("b", t0 + 1)).toBe(true);
+    expect(shaper.allow("c", t0 + 2)).toBe(true);
+    expect(shaper.bucketCount).toBe(3);
+    // "a" is idlest; inserting a 4th key evicts it, size stays at cap.
+    expect(shaper.allow("d", t0 + 3)).toBe(true);
+    expect(shaper.bucketCount).toBe(3);
+    expect(shaper.allow("a", t0 + 4)).toBe(true); // a was evicted, gets fresh bucket
+    expect(shaper.bucketCount).toBe(3);
+  });
+ });
 
 describe("OBS-87: TLS-only edge", () => {
   it("rejects non-https x-forwarded-proto with 426 when requireTls is set", async () => {

@@ -52,17 +52,59 @@ export interface RelayerConfig {
   requireTls?: boolean;
 }
 
-/** Per-IP token bucket (OBS-87 rate shaping on /v1/signals). */
-class RateShaper {
+/**
+ * Per-IP token bucket (OBS-87 rate shaping on /v1/signals).
+ *
+ * OBS-245 / audit F-1: the bucket map is bounded two ways so a long-lived
+ * process cannot grow it without limit when production shaping is on
+ * (the key is the attacker-controllable x-forwarded-for value):
+ *   - TTL eviction: an entry idle >= idleTtlMs is dropped. A bucket refills
+ *     to full within 60s, so with idleTtlMs >= 60_000 an evicted entry is
+ *     semantically identical to a fresh one (tokens clamp at perMin).
+ *     Sweeps are amortized (at most one per idleTtlMs window).
+ *   - Cap eviction: if size would exceed maxBuckets, the idlest entry
+ *     (smallest lastMs) is evicted first — bounds memory absolutely even
+ *     under sub-TTL key churn.
+ */
+export class RateShaper {
   private readonly buckets = new Map<string, { tokens: number; lastMs: number }>();
   private readonly perMin: number;
-  constructor(perMin: number) {
+  private nextSweepMs = 0;
+  constructor(
+    perMin: number,
+    private readonly maxBuckets = 65_536,
+    private readonly idleTtlMs = 120_000,
+  ) {
     this.perMin = perMin;
+  }
+  /** Number of tracked buckets (exposed for tests/ops visibility). */
+  get bucketCount(): number {
+    return this.buckets.size;
   }
   /** Returns true iff one token was available and consumed. */
   allow(ip: string, nowMs: number): boolean {
     const refillPerMs = this.perMin / 60_000;
-    const b = this.buckets.get(ip) ?? { tokens: this.perMin, lastMs: nowMs };
+    if (nowMs >= this.nextSweepMs) {
+      this.nextSweepMs = nowMs + this.idleTtlMs;
+      for (const [key, b] of this.buckets) {
+        if (nowMs - b.lastMs >= this.idleTtlMs) this.buckets.delete(key);
+      }
+    }
+    let b = this.buckets.get(ip);
+    if (!b) {
+      if (this.buckets.size >= this.maxBuckets) {
+        let idlestKey: string | null = null;
+        let idlestMs = Infinity;
+        for (const [key, e] of this.buckets) {
+          if (e.lastMs < idlestMs) {
+            idlestMs = e.lastMs;
+            idlestKey = key;
+          }
+        }
+        if (idlestKey !== null) this.buckets.delete(idlestKey);
+      }
+      b = { tokens: this.perMin, lastMs: nowMs };
+    }
     b.tokens = Math.min(this.perMin, b.tokens + (nowMs - b.lastMs) * refillPerMs);
     b.lastMs = nowMs;
     const ok = b.tokens >= 1;
