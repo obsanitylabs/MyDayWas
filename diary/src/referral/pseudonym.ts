@@ -23,3 +23,8 @@ export function rotateReferralPseudonym(storage: Storage): string {
   storage.setItem(PSEUDONYM_KEY, p);
   return p;
 }
+
+/** Remove the pseudonym entirely (delete-account cleanup — D3, OBS-364). */
+export function clearReferralPseudonym(storage: Storage): void {
+  storage.removeItem(PSEUDONYM_KEY);
+}

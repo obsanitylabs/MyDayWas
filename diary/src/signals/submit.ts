@@ -64,6 +64,11 @@ export function rotateContributorToken(storage: Storage): string {
   return tok;
 }
 
+/** Remove the contributor token entirely (delete-account cleanup — D3, OBS-364). */
+export function clearContributorToken(storage: Storage): void {
+  storage.removeItem(TOKEN_KEY);
+}
+
 /**
  * Build the coarsened submission payload — the single choke point.
  * `sentiment` comes from the user's own tag (or on-device inference);

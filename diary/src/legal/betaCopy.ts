@@ -98,3 +98,11 @@ export const REFERRAL_LABELS: Record<string, string> = {
   healthMood: "Mood framed as a health concern — sensitive health information",
   crisis: "Crisis — sensitive health information",
 };
+/**
+ * Delete-account confirmation dialog (landed verbatim at d99caa8, OBS-228
+ * deliverable 5 / OBS-229 clearance; re-exported as a constant so the D3
+ * post-delete localStorage cleanup (OBS-364) is provable against the exact
+ * promised copy. Reused cleared phrases only — do not edit the wording.
+ */
+export const DELETE_ACCOUNT_CONFIRM =
+  "Delete ALL diary entries and this account's sync ciphertext? This cannot be undone. We will stop your signals, clear your signal queue, and purge any pending partner referrals. It does not change groups already published on-chain. A platform backup outside this app (for example a phone-maker backup) may still hold a copy; if you use one, turn off backup of this app in the platform settings after you delete.";

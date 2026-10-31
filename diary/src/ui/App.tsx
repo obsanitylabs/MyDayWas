@@ -5,6 +5,7 @@ import { log } from "../log";
 import { getSignalsOptIn, revokeSignals, setSignalsOptIn } from "../signals/settings";
 import { SIGNAL_DISCLOSURE, SIGNALS_TITLE, SIGNALS_TITLE_HINT } from "../signals/disclosure";
 import { buildSignalPayload, getContributorToken, httpTransport, rotateContributorToken } from "../signals/submit";
+import { purgeSharedAccountState } from "../app/accountCleanup";
 import { isFollowUpEnabled, markPrompted, onDeviceFollowUp, setFollowUpEnabled, shouldPromptFor, skipPrompt } from "../followup/prompt";
 import { getReferralPseudonym, rotateReferralPseudonym } from "../referral/pseudonym";
 import {
@@ -24,6 +25,7 @@ import {
   BETA_NOTICE,
   BETA_PRIVACY,
   BETA_TERMS,
+  DELETE_ACCOUNT_CONFIRM,
   REFERRAL_LABELS,
   SIGNALS_BETA_LINE,
 } from "../legal/betaCopy";
@@ -57,6 +59,9 @@ export function App(): React.ReactElement {
   const [hasBackup, setHasBackup] = useState(false);
   const [oldPw, setOldPw] = useState("");
   const [newPw, setNewPw] = useState("");
+  // D4 (OBS-364): optional onboarding passphrase — React state ONLY, never
+  // persisted, never sent anywhere; used once by Diary.onboard and cleared.
+  const [onboardPw, setOnboardPw] = useState("");
   const bootRef = useRef(false);
 
   // M4: anonymous signals, follow-up prompt, referral stub
@@ -127,7 +132,8 @@ export function App(): React.ReactElement {
       const provider = getInjectedProvider();
       if (!provider) throw new Error("No EIP-1193 wallet detected in this browser.");
       const [address] = await connectAccounts(provider);
-      const d = await Diary.onboard(provider, address);
+      const d = await Diary.onboard(provider, address, onboardPw || undefined);
+      setOnboardPw(""); // never keep the passphrase in state past onboarding
       setDiary(d);
       await refresh(d);
       setStatus("onboarded");
@@ -370,8 +376,14 @@ export function App(): React.ReactElement {
 
   const deleteAccount = async () => {
     if (!diary) return;
-    if (!window.confirm("Delete ALL diary entries and this account's sync ciphertext? This cannot be undone. We will stop your signals, clear your signal queue, and purge any pending partner referrals. It does not change groups already published on-chain. A platform backup outside this app (for example a phone-maker backup) may still hold a copy; if you use one, turn off backup of this app in the platform settings after you delete.")) return;
+    if (!window.confirm(DELETE_ACCOUNT_CONFIRM)) return;
     await diary.deleteAccount();
+    // D3 (OBS-364): perform what the dialog promises — stop signals, remove
+    // the signal token, revoke referral consent, clear the referral queue,
+    // remove the referral pseudonym — so the cleared consent copy is true.
+    purgeSharedAccountState(storage);
+    setSignalsOn(false);
+    setRefConsentState(getReferralConsent(storage));
     setDiary(null);
     setEntries([]);
     setStatus("account deleted");
@@ -424,7 +436,24 @@ export function App(): React.ReactElement {
           <span className="spacer" />
           <span>{online ? "online" : "offline — entries still work"}</span>
           {diary && <button onClick={syncNow}>Sync now</button>}
-          {!diary && <button className="primary" onClick={onboard} disabled={busy}>Connect wallet &amp; create diary</button>}
+          {!diary && (
+            <div className="row" style={{ marginTop: 8 }}>
+              <input
+                type="password"
+                placeholder="Optional backup passphrase (enables encrypted backup export)"
+                value={onboardPw}
+                onChange={(e) => setOnboardPw(e.target.value)}
+              />
+              <button className="primary" onClick={onboard} disabled={busy}>Connect wallet &amp; create diary</button>
+            </div>
+          )}
+          {!diary && (
+            <p className="hint">
+              Optional. The passphrase is held in memory for this step only, to wrap your
+              encrypted key backup. Setting it enables "Export encrypted backup" and
+              "Change passphrase"; leaving it empty keeps both unavailable in v1.
+            </p>
+          )}
         </div>
         {err && <p className="error">{err}</p>}
       </div>

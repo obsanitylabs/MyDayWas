@@ -185,13 +185,23 @@ describe("F3 pipeline on the durable backend", () => {
       ledger: new SqlitePublicationLedger(path),
     });
     const first = mk();
-    const pipeline1 = new PublicationPipeline(first.store, custody, new DryRunSubmitter(), { ledger: first.ledger });
+    // D2 (OBS-364): seed enough contributors that cells actually publish, so the
+    // first publish consumes the durable claim (a below-k publish no longer does).
+    await first.store.record(sub("POSITIVE", DAY0, token(0)), ingestMs);
+    const pipeline1 = new PublicationPipeline(first.store, custody, new DryRunSubmitter(), {
+      ledger: first.ledger,
+      kThreshold: 1,
+    });
     await pipeline1.publishDay(DAY0, (DAY0 + 1) * MS_PER_DAY + 1);
     first.store.close();
     first.ledger.close();
     // restart: a fresh process sees the published day and rejects the replay
     const second = mk();
-    const pipeline2 = new PublicationPipeline(second.store, custody, new DryRunSubmitter(), { ledger: second.ledger });
+    await second.store.record(sub("POSITIVE", DAY0, token(0)), ingestMs);
+    const pipeline2 = new PublicationPipeline(second.store, custody, new DryRunSubmitter(), {
+      ledger: second.ledger,
+      kThreshold: 1,
+    });
     await expect(pipeline2.publishDay(DAY0, (DAY0 + 1) * MS_PER_DAY + 1)).rejects.toThrow(AlreadyPublished);
     second.store.close();
     second.ledger.close();

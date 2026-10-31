@@ -380,15 +380,44 @@ describe("publish idempotency (F2)", () => {
     expect(submitter.submitted.length).toBe(1);
   });
 
-  it("below-k days are also published at most once", async () => {
+  it("D2 regression (OBS-364) 1: below-k publish does not burn the day's claim; k reached then commits the day exactly once", async () => {
+    const { store, custody } = newStore();
+    const submitter = new CountingSubmitter();
+    const pipeline = new PublicationPipeline(store, custody, submitter);
+    await addContributors(store, DAY0, "POSITIVE", 5);
+    // below-k publish: 200 with all cells published:false, recordBatch:null, nothing committed
+    const below = await pipeline.publishDay(DAY0, publishMs);
+    expect(below.cells.every((c) => !c.published)).toBe(true);
+    expect(below.chain.recordBatch).toBeFalsy();
+    expect(submitter.submitted.every((b) => !b.hasPublishedCells)).toBe(true); // no chain effect
+    // reach k afterwards: the day's claim was NOT consumed by the below-k publish
+    await addContributors(store, DAY0, "POSITIVE", K_THRESHOLD - 5, 5); // distinct tokens 0..99
+    const artifact = await pipeline.publishDay(DAY0, publishMs);
+    expect(artifact.chain.recordBatch?.deltas).toEqual([K_THRESHOLD, 0, 0]);
+    // exactly one COMMIT (hasPublishedCells batch) for the day — the below-k attempt committed none
+    expect(submitter.submitted.filter((b) => b.hasPublishedCells).length).toBe(1);
+    // trade-off noted in OBS-364: one recordBatch per day, not two — the below-k
+    // attempt produced none, the k-reached publish produced the single commit.
+  });
+
+  it("D2 regression (OBS-364) 2: repeat publish of an already-published day is rejected AlreadyPublished (anti-replay preserved)", async () => {
+    const { store, custody } = newStore();
+    await addContributors(store, DAY0, "POSITIVE", K_THRESHOLD);
+    const submitter = new CountingSubmitter();
+    const pipeline = new PublicationPipeline(store, custody, submitter);
+    await pipeline.publishDay(DAY0, publishMs);
+    await expect(pipeline.publishDay(DAY0, publishMs)).rejects.toThrow(AlreadyPublished);
+    expect(submitter.submitted.filter((b) => b.hasPublishedCells).length).toBe(1); // no double-commit of add-only deltas
+  });
+
+  it("below-k publish is repeatable while still below k (no claim consumed, still nothing committed)", async () => {
     const { store, custody } = newStore();
     await addContributors(store, DAY0, "POSITIVE", 5);
     const submitter = new CountingSubmitter();
     const pipeline = new PublicationPipeline(store, custody, submitter);
-    await pipeline.publishDay(DAY0, publishMs); // all cells below k: nothing committed, day still published
-    expect(submitter.submitted.length).toBe(1);
-    await expect(pipeline.publishDay(DAY0, publishMs)).rejects.toThrow(AlreadyPublished);
-    expect(submitter.submitted.length).toBe(1);
+    await pipeline.publishDay(DAY0, publishMs); // below k: no claim consumed
+    await pipeline.publishDay(DAY0, publishMs); // still below k: repeatable, no AlreadyPublished
+    expect(submitter.submitted.every((b) => !b.hasPublishedCells)).toBe(true); // still nothing committed
   });
 });
 

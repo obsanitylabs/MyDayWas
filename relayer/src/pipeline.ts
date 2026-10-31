@@ -154,11 +154,26 @@ export class PublicationPipeline {
    * otherwise double-commit). The claim is released ONLY when submission itself
    * failed; any later failure (signing/custody) keeps it, so a retry cannot
    * double-commit an already-sent batch.
+   *
+   * D2 (OBS-364, PM decision 2026-10-31): the claim is consumed ONLY when cells
+   * are actually published (`batch.hasPublishedCells`). A below-k publish commits
+   * nothing on-chain (`recordBatch: null`), so it must not burn the day's one-shot
+   * claim; a later publish once k is reached still succeeds and commits the day.
+   * Replay protection is unchanged for published days: a second publish of a day
+   * that WAS published is rejected AlreadyPublished (409 `already_published`),
+   * proven by tests (below-k-then-k commits once; replay of a published day 409s).
+   * Ledger row semantics change accordingly: a ledger row now means "this day was
+   * committed on-chain by this relayer instance", not "a publish was attempted".
+   * Trade-off accepted by the PM: a below-k publish followed by a later publish
+   * produces ONE recordBatch per day (the below-k attempt produces none).
    */
   async publishDay(dayId: number, nowMs: number): Promise<ReconciliationArtifact> {
     // Read-only gate first: unpublishable days must not consume a ledger claim.
     const batch = this.buildBatch(dayId, nowMs);
-    if (!(await this.ledger.tryClaim(dayId))) throw new AlreadyPublished(dayId);
+    // D2: below-k batches commit nothing — do not consume the day's claim.
+    if (batch.hasPublishedCells && !(await this.ledger.tryClaim(dayId))) {
+      throw new AlreadyPublished(dayId);
+    }
 
     let result: RecordBatch;
     try {
