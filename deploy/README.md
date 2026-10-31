@@ -3,6 +3,8 @@
 **Owner:** CTO (+ SRE). **Gates:** provisioning/deployment below is **[gated]**
 — none of it may execute before the OBS-237 external written sign-off and the
 stage-6 CISO control sign-off (see `docs/PRODUCTION-DEPLOYMENT.md` §6).
+See `docs/PRODUCTION-DEPLOYMENT.md` §Deploy-freeze notice (OBS-511) for the
+freeze that gates all app.mydaywas.com publish paths.
 No mainnet. No secrets anywhere in this directory — values are injected from
 the Paperclip secret store / platform secret manager at deploy time.
 

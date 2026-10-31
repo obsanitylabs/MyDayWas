@@ -154,3 +154,29 @@ vendor commitment until a signed quote is in place.
   real-submitter cutover.
 - No secrets in issues, comments, documents, or code — managed secret
   bindings only.
+
+## Deploy-freeze notice (OBS-511)
+
+**Freeze:** No deploy of the diary app to `app.mydaywas.com` is permitted
+until the following sign-offs land:
+1. **OBS-237** — external written sign-off (launch-readiness, OBS-227 §2.4)
+2. **OBS-301** — stage-6 CISO control sign-off (OBS-236)
+
+**Superseding coordinated change:** The CSP allow-list (connect-src
+'self' + the production relayer origin) and the relayer DNS/LB must be
+published as a single coordinated change after both sign-offs land. The
+widened CSP (`connect-src 'self' https://relayer.mydaywas.com`) that
+shipped on commit `b511b66` must not be published to `app.mydaywas.com`.
+
+**Scope:** This freeze applies to all publish paths to `app.mydaywas.com`:
+- Netlify site `mydaywas-app` (branch-linked deploy / build hooks /
+  continuous deploy settings / deploy API token or webhook)
+- CI workflow (any Netlify deploy step — currently none; app was deployed
+  by hand from a digest build)
+- Local/scripted deploy paths (`deploy/README.md`, `docs/PRODUCTION-DEPLOYMENT.md`,
+  and the Netlify CLI config in the workspace)
+
+**Deploy id:** The currently published deploy id is `b511b66`
+(branch `m4/signals-v1`, deployed with the widened CSP).
+
+**Status:** In progress — freeze documented; verification pending.
