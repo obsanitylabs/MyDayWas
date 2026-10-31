@@ -18,6 +18,15 @@ import {
   type ReferralSpecialField,
 } from "../referral/consent";
 import { buildReferralItem, clearQueue, enqueue, purge } from "../referral/queue";
+import {
+  BETA_ACK_KEY,
+  BETA_ACK_LABEL,
+  BETA_NOTICE,
+  BETA_PRIVACY,
+  BETA_TERMS,
+  REFERRAL_LABELS,
+  SIGNALS_BETA_LINE,
+} from "../legal/betaCopy";
 
 const SENTIMENTS: Sentiment[] = ["POSITIVE", "NEGATIVE", "NEUTRAL"];
 
@@ -61,6 +70,12 @@ export function App(): React.ReactElement {
   const [followUpText, setFollowUpText] = useState("");
   const [refConsent, setRefConsentState] = useState<ReferralConsent>(() => getReferralConsent(storage));
   const [refStatus, setRefStatus] = useState<string>("");
+  // M6 (OBS-229 clearance §2.1/§3.1): blocking, not pre-ticked 18+ beta gate.
+  const [betaAck, setBetaAck] = useState(() => storage.getItem(BETA_ACK_KEY) === "1");
+  const ackBeta = () => {
+    storage.setItem(BETA_ACK_KEY, "1");
+    setBetaAck(true);
+  };
 
   const refresh = useCallback(async (d: Diary) => {
     setEntries(await d.listEntries());
@@ -284,8 +299,9 @@ export function App(): React.ReactElement {
       return;
     }
     const item = buildReferralItem(c, getReferralPseudonym(storage), { type: contactType, value: contactValue }, region);
+    // OBS-229 clearance §2.4/§3.3: preview shows plain labels, not raw field keys.
     const preview = Object.entries(item.data)
-      .map(([k, v]) => `  • ${k}: ${v}`)
+      .map(([k, v]) => `  • ${REFERRAL_LABELS[k] ?? k}: ${v}`)
       .join("\n");
     const ok = window.confirm(
       `Queue this referral for a curated partner?\n\n` +
@@ -354,7 +370,7 @@ export function App(): React.ReactElement {
 
   const deleteAccount = async () => {
     if (!diary) return;
-    if (!window.confirm("Delete ALL diary entries and this account's sync ciphertext? This cannot be undone. We will stop your signals, clear your signal queue, and purge any pending partner referrals. It does not change groups already published on-chain.")) return;
+    if (!window.confirm("Delete ALL diary entries and this account's sync ciphertext? This cannot be undone. We will stop your signals, clear your signal queue, and purge any pending partner referrals. It does not change groups already published on-chain. A platform backup outside this app (for example a phone-maker backup) may still hold a copy; if you use one, turn off backup of this app in the platform settings after you delete.")) return;
     await diary.deleteAccount();
     setDiary(null);
     setEntries([]);
@@ -368,6 +384,33 @@ export function App(): React.ReactElement {
         <span className="tag">private diary · v1 (M4 staging)</span>
       </header>
 
+      <div className="card beta">
+        <h2>MyDayWas public beta</h2>
+        <p className="hint" style={{ whiteSpace: "pre-wrap" }}>{BETA_NOTICE}</p>
+        {!betaAck && (
+          <div className="row">
+            <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <input type="checkbox" checked={false} onChange={(e) => { if (e.target.checked) ackBeta(); }} />
+              {BETA_ACK_LABEL}
+            </label>
+          </div>
+        )}
+        {betaAck && <p className="hint">Accepted: {BETA_ACK_LABEL}</p>}
+      </div>
+
+      <details className="card beta-legal">
+        <summary>Beta terms of use &amp; privacy notice</summary>
+        <p className="hint" style={{ whiteSpace: "pre-wrap" }}>{BETA_TERMS}</p>
+        <p className="hint" style={{ whiteSpace: "pre-wrap" }}>{BETA_PRIVACY}</p>
+      </details>
+
+      {!betaAck && (
+        <div className="card">
+          <p className="hint">The diary is unavailable until you confirm the beta notice above.</p>
+        </div>
+      )}
+
+      {betaAck && (
       <div className="card">
         <p className="hint">
           Entries are encrypted on this device with AES-GCM-256 before they are stored or synced.
@@ -385,8 +428,9 @@ export function App(): React.ReactElement {
         </div>
         {err && <p className="error">{err}</p>}
       </div>
+      )}
 
-      {diary && (
+      {diary && betaAck && (
         <>
           <div className="card">
             <h2>How was your day?</h2>
@@ -457,6 +501,7 @@ export function App(): React.ReactElement {
           <div className="card signals">
             <h2>{SIGNALS_TITLE}</h2>
             <p className="hint">{SIGNALS_TITLE_HINT}</p>
+            <p className="hint" style={{ whiteSpace: "pre-wrap" }}>{SIGNALS_BETA_LINE}</p>
             <p className="hint" style={{ whiteSpace: "pre-wrap" }}>{SIGNAL_DISCLOSURE}</p>
             <div className="row">
               <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -544,7 +589,7 @@ export function App(): React.ReactElement {
                         checked={refConsent.specialCategory[f]}
                         onChange={(e) => tickSpecial(f, e.target.checked)}
                       />
-                      {f} (sensitive health data — own confirmation)
+                      {REFERRAL_LABELS[f]} (own confirmation)
                     </label>
                   </div>
                 ))}
@@ -562,7 +607,7 @@ export function App(): React.ReactElement {
             )}
             <div className="row">
               <button onClick={enqueueReferralItem} disabled={!refConsent.referralEnabled || !refConsent.fields.contactMethod || !contactValue.trim()}>
-                Queue referral (stub)
+                Queue preview (not delivered)
               </button>
               <button onClick={() => { const n = purge(storage); setRefStatus(`Purged ${n} expired queue item(s).`); }}>
                 Purge queue now
