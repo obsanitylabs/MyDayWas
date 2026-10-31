@@ -245,6 +245,36 @@ describe("OBS-87: TLS-only edge", () => {
   });
 });
 
+describe("OBS-264: production liveness probe", () => {
+  it("GET /healthz returns 200 static ok on plain http even with requireTls", async () => {
+    const custody = new LocalDevCustody();
+    const { server } = createSignalServer(custody, { requireTls: true, ratePerMin: 1 });
+    const port = 18_096;
+    await new Promise<void>((r) => server.listen(port, () => r()));
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/healthz`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toEqual({ ok: true, service: "mydaywas-relayer" });
+    } finally {
+      server.close();
+    }
+  });
+
+  it("still 404s unknown GET paths so /healthz is the only probe surface", async () => {
+    const custody = new LocalDevCustody();
+    const { server } = createSignalServer(custody);
+    const port = 18_097;
+    await new Promise<void>((r) => server.listen(port, () => r()));
+    try {
+      expect((await fetch(`http://127.0.0.1:${port}/health`)).status).toBe(404);
+      expect((await fetch(`http://127.0.0.1:${port}/v1/healthz`)).status).toBe(404);
+    } finally {
+      server.close();
+    }
+  });
+});
+
 describe("OBS-87: alert-sink wiring for all alert reasons", () => {
   it("forwards every raised alert reason code to the sink with day resolution only", async () => {
     const custody = new LocalDevCustody();

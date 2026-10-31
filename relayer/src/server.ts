@@ -11,6 +11,11 @@
  *                            below-k suppression, one recordBatch per day,
  *                            signed reconciliation artifact; replay-guarded —
  *                            an already-published dayId is rejected 409)
+ *   GET  /healthz           liveness probe for the production LB/uptime
+ *                            monitor (OBS-264). Static response only; exempt
+ *                            from the TLS-only edge so LB probes that arrive
+ *                            over plain local HTTP succeed; carries no state,
+ *                            no payload data, no secrets.
  */
 
 import { createServer, type IncomingMessage, type Server } from "node:http";
@@ -152,6 +157,11 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
         res.writeHead(code, { "content-type": "application/json" });
         res.end(JSON.stringify(body));
       };
+      // OBS-264: production liveness probe. Exempt from requireTls (LB probes
+      // plain local HTTP without x-forwarded-proto) and from rate shaping.
+      if (req.method === "GET" && req.url === "/healthz") {
+        return respond(200, { ok: true, service: "mydaywas-relayer" });
+      }
       if (req.method !== "POST" || ![ "/v1/signals", "/v1/publish" ].includes(req.url ?? "")) {
         return respond(404, { error: "not_found" });
       }
