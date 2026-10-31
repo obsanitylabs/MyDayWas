@@ -7,15 +7,23 @@
  *    identifiers, no precise timestamps (day resolution only), no contributor
  *    tokens, no submission payloads.
  *  - Alerts are recorded as events with a reason code and are the hook for
- *    production anomaly monitoring (SNS/PagerDuty wiring is deployment config,
- *    intentionally not in this repo).
+ *    production anomaly monitoring. Production sink wiring (OBS-87): pass a
+ *    `sink` to `Alerts` (or set RELAYER_ALERT_WEBHOOK on the server CLI); the
+ *    sink receives `{reason, raisedDay, detail}` only — reason codes + day
+ *    resolution, no payload data — which is safe to forward to SNS/PagerDuty.
+ *  - Additional OBS-87 reasons: custody_usage_anomaly (blinding/signing op
+ *    spike), sybil_early_warning (day-over-day new-account spike),
+ *    rate_limited (per-IP rate shaping on /v1/signals).
  */
 
 export type AlertReason =
   | "unexpected_submission_fields"
   | "malformed_submission"
   | "dayId_out_of_window"
-  | "new_account_rate_limited";
+  | "new_account_rate_limited"
+  | "custody_usage_anomaly"
+  | "sybil_early_warning"
+  | "rate_limited";
 
 export interface Alert {
   reason: AlertReason;

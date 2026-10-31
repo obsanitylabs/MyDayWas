@@ -16,12 +16,13 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { parseSubmission, RejectedSubmission, type SignalSubmission } from "./types.ts";
 import { SignalStore, type SignalStoreCore } from "./store.ts";
-import { Alerts, log } from "./log.ts";
+import { Alerts, log, type Alert } from "./log.ts";
 import { AlreadyPublished, NotYetPublishable, PublicationPipeline } from "./pipeline.ts";
 import { DryRunSubmitter, type ChainSubmitter } from "./chain.ts";
 import { MemoryPublicationLedger, type PublicationLedger } from "./ledger.ts";
 import { DurableSignalStore, SqlitePublicationLedger } from "./durable.ts";
 import type { KeyCustody } from "./keycustody.ts";
+import { SybilEarlyWarning } from "./sybil.ts";
 
 export interface RelayerConfig {
   kThreshold?: number;
@@ -31,6 +32,44 @@ export interface RelayerConfig {
   ledger?: PublicationLedger;
   /** Signal store (F3); defaults to the process-local staging store. */
   store?: SignalStoreCore;
+  /**
+   * OBS-87 alert sink: receives every raised alert ({reason, raisedDay, detail}
+   * only — no payload data). Production forwards to SNS/PagerDuty; staging
+   * default is no-op (alerts stay queryable via `alerts.list()`).
+   */
+  alertSink?: (a: Alert) => void;
+  /**
+   * OBS-87 rate shaping on POST /v1/signals: per-IP token bucket, requests
+   * per minute. Undefined = shaping off (staging/tests); production config
+   * sets it explicitly (runbook default: 60).
+   */
+  ratePerMin?: number;
+  /**
+   * OBS-87 TLS-only edge: when true, reject any request whose
+   * x-forwarded-proto is not https (TLS terminates at the LB in front of
+   * this process). Staging default false.
+   */
+  requireTls?: boolean;
+}
+
+/** Per-IP token bucket (OBS-87 rate shaping on /v1/signals). */
+class RateShaper {
+  private readonly buckets = new Map<string, { tokens: number; lastMs: number }>();
+  private readonly perMin: number;
+  constructor(perMin: number) {
+    this.perMin = perMin;
+  }
+  /** Returns true iff one token was available and consumed. */
+  allow(ip: string, nowMs: number): boolean {
+    const refillPerMs = this.perMin / 60_000;
+    const b = this.buckets.get(ip) ?? { tokens: this.perMin, lastMs: nowMs };
+    b.tokens = Math.min(this.perMin, b.tokens + (nowMs - b.lastMs) * refillPerMs);
+    b.lastMs = nowMs;
+    const ok = b.tokens >= 1;
+    if (ok) b.tokens -= 1;
+    this.buckets.set(ip, b);
+    return ok;
+  }
 }
 
 export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {}): {
@@ -40,7 +79,7 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
   alerts: Alerts;
   ledger: PublicationLedger;
 } {
-  const alerts = new Alerts();
+  const alerts = new Alerts(cfg.alertSink);
   // One ledger per relayer instance (per-day + per-instance scoping, F2/F3 design).
   const ledger = cfg.ledger ?? new MemoryPublicationLedger();
   const store = cfg.store ?? new SignalStore((t, d, s) => custody.cellToken(t, d, s));
@@ -49,6 +88,10 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
     delayMs: cfg.delayMs,
     ledger,
   });
+  // OBS-87: Sybil early warning on day-over-day new-account counts.
+  const sybil = new SybilEarlyWarning(() => store.newAccountCounts(), alerts);
+  // OBS-87: rate shaping on /v1/signals (off unless ratePerMin is set).
+  const shaper = cfg.ratePerMin !== undefined ? new RateShaper(cfg.ratePerMin) : undefined;
 
   async function readJson(req: IncomingMessage, limit = 8_192): Promise<unknown> {
     let size = 0;
@@ -70,8 +113,22 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
       if (req.method !== "POST" || ![ "/v1/signals", "/v1/publish" ].includes(req.url ?? "")) {
         return respond(404, { error: "not_found" });
       }
+      // OBS-87: TLS-only edge in production (TLS terminates at the LB).
+      if (cfg.requireTls && req.headers["x-forwarded-proto"] !== "https") {
+        return respond(426, { error: "tls_required" });
+      }
       try {
         if (req.url === "/v1/signals") {
+          if (shaper) {
+            const ip =
+              req.headers["x-forwarded-for"]?.toString().split(",")[0]?.trim() ??
+              req.socket.remoteAddress ??
+              "unknown";
+            if (!shaper.allow(ip, Date.now())) {
+              alerts.raise("rate_limited", "per-IP rate shaping on /v1/signals rejected a request", Date.now());
+              return respond(429, { error: "rate_limited" });
+            }
+          }
           const raw = await readJson(req);
           let submission: SignalSubmission;
           try {
@@ -104,6 +161,8 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
             }
             throw e;
           }
+          // OBS-87: Sybil early warning on day-over-day new-account anomalies.
+          sybil.check(Date.now());
           log("ingest", "signal accepted", submission.dayId);
           return respond(202, { ok: true });
         }
@@ -136,20 +195,47 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
   return { server, store, pipeline, alerts, ledger };
 }
 
-/** CLI entrypoint (staging). */
+/** CLI entrypoint (staging + production config switches). */
 if (process.argv[1] && process.argv[1].endsWith("server.ts")) {
-  const { LocalDevCustody } = await import("./keycustody.ts");
-  const custody = new LocalDevCustody();
+  const { LocalDevCustody, CustodyUsageMonitor } = await import("./keycustody.ts");
+  const localCustody = new LocalDevCustody();
   // F3 (OBS-228): RELAYER_DB_PATH switches the relayer onto the durable
   // SQLite backend (restart- + multi-instance-safe ledger and store, shared
   // atomic new-account counter). Unset = process-local staging (DryRun-safe).
   const dbPath = process.env.RELAYER_DB_PATH;
-  const cfg: RelayerConfig = dbPath
-    ? {
-        ledger: new SqlitePublicationLedger(dbPath),
-        store: new DurableSignalStore(dbPath, (t, d, s) => custody.cellToken(t, d, s)),
+  // OBS-87: alert-sink wiring. RELAYER_ALERT_WEBHOOK forwards alert reason
+  // codes + day resolution (never payload data) to the ops webhook (e.g. an
+  // SNS/PagerDuty ingress). Unset = alerts stay in-process only.
+  const webhook = process.env.RELAYER_ALERT_WEBHOOK;
+  const alertSink = webhook
+    ? (a: Alert) => {
+        void fetch(webhook, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          // Alert reason codes + day resolution only — no payload data.
+          body: JSON.stringify({ reason: a.reason, raisedDay: a.raisedDay, detail: a.detail }),
+        }).catch(() => {
+          /* alert delivery is best-effort; alerts remain queryable in-process */
+        });
       }
-    : {};
+    : undefined;
+  // OBS-87: usage-anomaly monitoring on key usage (custody_usage_anomaly).
+  // Shares the production alert sink so custody anomalies reach ops too.
+  const custody = new CustodyUsageMonitor(localCustody, new Alerts(alertSink));
+  const cfg: RelayerConfig = {
+    ...(dbPath
+      ? {
+          ledger: new SqlitePublicationLedger(dbPath),
+          store: new DurableSignalStore(dbPath, (t, d, s) => custody.cellToken(t, d, s)),
+        }
+      : {}),
+    // OBS-87: production config switches (all optional; staging defaults off).
+    ratePerMin: process.env.RELAYER_RATE_PER_MIN !== undefined
+      ? Number(process.env.RELAYER_RATE_PER_MIN)
+      : undefined,
+    requireTls: process.env.RELAYER_REQUIRE_TLS === "1",
+    alertSink,
+  };
   const { server } = createSignalServer(custody, cfg);
   const port = Number(process.env.RELAYER_PORT ?? 8081);
   server.listen(port, () => {

@@ -52,6 +52,8 @@ export interface SignalStoreCore {
   distinctContributors(dayId: number, sentiment: Sentiment): number;
   stats(dayId: number, sentiment: Sentiment): CellStats;
   purge(nowMs?: number): CellPurge[];
+  /** Per-UTC-day new-account counts (Sybil early-warning input; day → opened). */
+  newAccountCounts(): Map<number, number>;
 }
 
 export class SignalStore implements SignalStoreCore {
@@ -101,6 +103,11 @@ export class SignalStore implements SignalStoreCore {
 
   distinctContributors(dayId: number, sentiment: Sentiment): number {
     return this.cells.get(`${dayId}:${sentiment}`)?.size ?? 0;
+  }
+
+  /** Per-UTC-day new-account counts (Sybil early-warning input). */
+  newAccountCounts(): Map<number, number> {
+    return new Map(this.newAccountsPerDay);
   }
 
   stats(dayId: number, sentiment: Sentiment): CellStats {

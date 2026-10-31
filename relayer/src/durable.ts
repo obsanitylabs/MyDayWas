@@ -157,6 +157,12 @@ export class DurableSignalStore implements SignalStoreCore {
     return row.c;
   }
 
+  /** Per-UTC-day new-account counts from the shared atomic counter table. */
+  newAccountCounts(): Map<number, number> {
+    const rows = this.db.prepare("SELECT dayId, opened FROM new_accounts").all() as Array<{ dayId: number; opened: number }>;
+    return new Map(rows.map((r) => [r.dayId, r.opened]));
+  }
+
   stats(dayId: number, sentiment: Sentiment): CellStats {
     const total = (this.db
       .prepare("SELECT total FROM cell_total WHERE dayId = ? AND sentiment = ?")
