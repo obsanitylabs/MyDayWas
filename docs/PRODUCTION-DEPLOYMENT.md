@@ -190,8 +190,8 @@ shipped on commit `b511b66` must not be published to `app.mydaywas.com`.
 
 **Deploy id:** The currently published deploy id is `6ae6223747930d130d68763f`
 (branch `m4/signals-v1`, deployed with the inert baseline
-`connect-src 'self'`). The widened CSP commit `b511b66` was rolled back and
-is not live.
+`connect-src 'self'`). The widened CSP deploy `6ae6201d1d56cce297fe0ece` was
+rolled back and is not live.
 
 **Commit status:** `c4e8be4` (the freeze notice) exists only in the local
 working tree; `origin/m4/signals-v1` is still `b511b66`. The freeze notice
