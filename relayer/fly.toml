@@ -1,5 +1,8 @@
-# OBS-313 D3: reference platform config for the chosen deployment model —
-# container/VM with a persistent local volume (docs/PRODUCTION-DEPLOY-MODEL.md).
+# OBS-313 D3 / OBS-676: single reference platform config for the chosen
+# deployment model — container/VM with a persistent local volume
+# (docs/PRODUCTION-DEPLOY-MODEL.md). It sits NEXT TO the Dockerfile it builds
+# (relayer/Dockerfile) so the config, the image, and the build context cannot
+# drift apart.
 #
 # Placeholders only — this file commits NO secrets. The single real, public
 # value is the browser CORS origin of record (RELAYER_ALLOWED_ORIGINS): a
@@ -11,15 +14,28 @@
 # requires the CFO/CEO approval routed through Approvals before any spend
 # is committed. The envelope is a ceiling, not a purchase.
 #
-# Usage (at provisioning, after gates clear):
-#   fly launch --config deploy/fly.toml --no-deploy   # or equivalent import
+# Usage (run BOTH commands from the repo root; at provisioning, after gates
+# clear). `relayer` is the working directory: flyctl looks up fly.toml and the
+# Dockerfile inside it, so the build CONTEXT is `relayer/` (where the relayer's
+# own package.json / tsconfig / src / test live — NOT the repo-root landing
+# tree). Fly's app-config reference documents this as the working-directory
+# argument (`[build] dockerfile` alone does not change the context).
+#   fly launch --config relayer/fly.toml --no-deploy   # or equivalent import
 #   fly secrets set RELAYER_ALERT_WEBHOOK=… RELAYER_EOA_SECRET_KEY=…  (secret store)
-#   fly deploy --config deploy/fly.toml --build-arg none
+#   fly deploy relayer
 # Env values not marked secret are injected via platform env; secrets via the
 # platform secret store — NEVER via fly.toml (this file is public).
 
 app = "mydaywas-relayer"          # placeholder — set at provisioning
 primary_region = "iad"            # placeholder — set at provisioning
+
+# OBS-676: the relayer image build. `dockerfile` is resolved RELATIVE TO THIS
+# CONFIG's directory (relayer/), so it is relayer/Dockerfile. The build context
+# is set by `fly deploy relayer` (the working-directory argument) — that is what
+# makes the relayer's own manifest the one the Dockerfile copies. CI builds the
+# identical image with `context: relayer` (.github/workflows/ci.yml).
+[build]
+  dockerfile = "Dockerfile"
 
 [env]
   RELAYER_PORT = "8081"

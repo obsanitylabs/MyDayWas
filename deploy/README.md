@@ -8,13 +8,16 @@ freeze that gates all app.mydaywas.com publish paths.
 No mainnet. No secrets anywhere in this directory — values are injected from
 the Paperclip secret store / platform secret manager at deploy time.
 
-## Artifacts in this directory
+## Reference config + artifacts
 
-| File | Purpose |
-| --- | --- |
-| `fly.toml` | Reference platform config for the chosen model (container/VM + persistent local volume). Placeholders only. |
+There is **exactly one** reference platform config: **`relayer/fly.toml`**. It
+sits next to `relayer/Dockerfile` — the image it builds — so the config, the
+image, and the build context cannot drift apart (OBS-676). Placeholders only.
+This directory holds the runbook; it no longer holds a second config.
 
 Supporting artifacts elsewhere:
+`relayer/fly.toml` (reference platform config, container/VM + persistent local
+volume),
 `relayer/Dockerfile` (image build; typecheck + vitest run inside the build),
 `relayer/.env.production.example` (the full production env contract),
 `.github/workflows/ci.yml` (CI: relayer typecheck+tests+image, diary, landing,
@@ -32,7 +35,7 @@ Every value reaches the running relayer through one of exactly three paths:
    `RELAYER_KMS_PROVIDER`, `RELAYER_KMS_BLINDER_KEY_ARN`,
    `RELAYER_KMS_SIGNER_KEY_ARN`, `RELAYER_KMS_*_VERSION`,
    `RELAYER_ALLOWED_ORIGINS`, `RELAYER_BUILD_REVISION` — set in the platform
-   config from `fly.toml` `[env]` + CI (`RELAYER_BUILD_REVISION` = git sha).
+   config from `relayer/fly.toml` `[env]` + CI (`RELAYER_BUILD_REVISION` = git sha).
 
    `RELAYER_ALLOWED_ORIGINS` (OBS-549) is the browser CORS allow-list: a
    comma-separated list of **exact** origins permitted to POST to the relayer
@@ -41,9 +44,9 @@ Every value reaches the running relayer through one of exactly three paths:
    relayer answers it (204) only when the request `Origin` exactly matches an
    entry here. **Unset or empty = closed** (no origin is allowed). Never `*`,
    never a reflected `Origin`. Read once at server construction. The reference
-   config in this directory (`fly.toml` `[env]`) sets it to the app origin of
-   record, `https://app.mydaywas.com`; if that key is dropped from the platform
-   config the browser path is CLOSED and the diary's only network call fails.
+   config (`relayer/fly.toml` `[env]`) sets it to the app origin of record,
+   `https://app.mydaywas.com`; if that key is dropped from the platform config
+   the browser path is CLOSED and the diary's only network call fails.
 2. **Platform secrets (secret values):** `RELAYER_ALERT_WEBHOOK`,
    `RELAYER_EOA_SECRET_KEY` — set via the platform secret store
    (`fly secrets set …`), sourced from the Paperclip secret store.
@@ -59,12 +62,36 @@ time (Netlify env) per `docs/PRODUCTION-DOMAIN-DECISION.md`.
 
 ## Deploy [gated]
 
+Run the commands from the **repo root** (the working-directory argument is what
+sets the Docker build context):
+
+```bash
+# 1. Create/import the app from the reference config (no build yet).
+fly launch --config relayer/fly.toml --no-deploy
+# 2. Inject the secret values from the Paperclip secret store.
+fly secrets set -a mydaywas-relayer RELAYER_ALERT_WEBHOOK=… RELAYER_EOA_SECRET_KEY=…
+# 3. Build + deploy. `relayer` is flyctl's working directory, so it reads
+#    relayer/fly.toml and relayer/Dockerfile there.
+fly deploy relayer
+```
+
+**How the build context is resolved:** `fly deploy relayer` changes flyctl's
+working directory to `relayer/`; the config (`relayer/fly.toml`), the Dockerfile
+(`relayer/Dockerfile`, via `[build] dockerfile = "Dockerfile"`), and the Docker
+build context are all resolved from there. That context is the relayer tree
+(`package.json` with `typecheck`/`test`, `tsconfig.json`, `vitest.config.mts`,
+`src/`, `test/`) — exactly the tree CI builds with `context: relayer`. Running
+`fly deploy` from the repo root with no argument resolves the Dockerfile against
+the landing tree instead and produces the wrong (or no) image.
+
 1. **Pre-flight gates:** OBS-237 written sign-off recorded; CISO stage-6
    sign-off recorded; IAM policy applied per `docs/PRODUCTION-IAM.md`;
    KMS key objects provisioned (blinder + signer, versioned keyIds);
    `RELAYER_KMS_OPS_MODULE` adapter installed on the image; secrets set.
 2. **Build image** from `relayer/Dockerfile` (CI already gates: the build runs
    `npm run typecheck && npm test` inside — a red suite produces no image).
+   The in-build gate runs against the relayer's own manifest (step 3's
+   `relayer` context), not the repo-root landing manifest.
 3. **Deploy** one instance (single-writer topology) with the persistent volume
    mounted at `/data` (`RELAYER_DB_PATH=/data/mydaywas-relayer.db`).
    Keep `RELAYER_SUBMITTER=dry-run` — the real-submitter cutover is CISO-gated

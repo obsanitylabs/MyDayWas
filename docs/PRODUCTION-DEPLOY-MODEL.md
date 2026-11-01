@@ -18,8 +18,8 @@ Chosen over the CFO's other two models:
 ## Provider + topology
 
 - **Provider class:** Fly.io / ECS Fargate / Railway (reference config:
-  `deploy/fly.toml`; final provider picked at provisioning inside the same
-  cost envelope). 
+  `relayer/fly.toml`, next to the image it builds; final provider picked at
+  provisioning inside the same cost envelope). 
 - **Topology: single writer.** One instance against one persistent volume
   (`/data`). Multi-instance would have to share a host/local volume; not
   planned for the beta — the single writer IS the deployment model (CISO

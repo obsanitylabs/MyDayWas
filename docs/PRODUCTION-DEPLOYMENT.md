@@ -65,7 +65,7 @@ from the Paperclip secret store / provider secret manager, never committed.
 | `RELAYER_PORT` | 8081 (behind LB) | config |
 | `RELAYER_REQUIRE_TLS` | `1` | checklist §3 |
 | `RELAYER_RATE_PER_MIN` | `60` | checklist §4 runbook default |
-| `RELAYER_ALLOWED_ORIGINS` | `https://app.mydaywas.com` (exact app origin; comma-separated list; unset/empty = closed) | config (`deploy/fly.toml` `[env]`) |
+| `RELAYER_ALLOWED_ORIGINS` | `https://app.mydaywas.com` (exact app origin; comma-separated list; unset/empty = closed) | config (`relayer/fly.toml` `[env]`) |
 | `RELAYER_ALERT_WEBHOOK` | ops SNS/PagerDuty ingress URL | secret store |
 | `RELAYER_DB_PATH` | local persistent volume path | checklist §2 |
 | `RELAYER_CUSTODY` | `kms` (+ `RELAYER_KMS_*` per `docs/PRODUCTION-IAM.md`) | config + secret store |
@@ -85,7 +85,14 @@ Full contract + injection paths: `relayer/.env.production.example` and
    complete; CISO control sign-off (stage 6) complete. Abort if any missing.
 2. **Provision** hosting within the envelope; attach KMS key objects (§1.2);
    inject env from the secret store.
-3. **Deploy relayer**; `GET /healthz` returns 200 over TLS via the LB with
+3. **Build + deploy the relayer from the repo root:** `fly deploy relayer`.
+   `relayer` is flyctl's working directory, so it reads `relayer/fly.toml` and
+   `relayer/Dockerfile` there and uses `relayer/` as the Docker build context —
+   the relayer's own manifest (`typecheck`/`test`), `tsconfig.json`,
+   `vitest.config.mts`, `src/`, `test/`, exactly what CI builds with
+   `context: relayer`. Create/import the app first with
+   `fly launch --config relayer/fly.toml --no-deploy`.
+   Then `GET /healthz` returns 200 over TLS via the LB with
    the readiness body (`docs/PRODUCTION-DEPLOYMENT.md` → OBS-313 D2):
    `ok`, `service`, `buildRevision`, `uptimeSec`, `submitter` (dry-run/real),
    `custody` (provider + versioned `blinderKeyId`/`signerKeyId`), `db`
