@@ -31,11 +31,26 @@ export interface SignalTransport {
   submit(payload: SignalPayload): Promise<void>;
 }
 
+/**
+ * The relayer's only client-facing route. `VITE_RELAYER_URL` is documented
+ * (deploy/README.md, docs/PRODUCTION-DEPLOYMENT.md, relayer/.env.production.example,
+ * and the CSP connect-src allow-list) as the relayer ORIGIN, not an endpoint —
+ * the app owns the API path. /v1/publish is operator-only (curl) and is never
+ * wired into the browser.
+ */
+export const SIGNALS_ENDPOINT_PATH = "/v1/signals";
+
+/** Resolve the submission URL from the configured origin (trailing slash safe). */
+export function signalsEndpoint(origin: string): string {
+  return origin.replace(/\/+$/, "") + SIGNALS_ENDPOINT_PATH;
+}
+
 /** dev/staging transport: POST to the relayer over TLS if configured. */
 export function httpTransport(url: string): SignalTransport {
+  const endpoint = signalsEndpoint(url);
   return {
     async submit(payload: SignalPayload): Promise<void> {
-      const res = await fetch(url, {
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
