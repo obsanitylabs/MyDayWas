@@ -31,8 +31,16 @@ Every value reaches the running relayer through one of exactly three paths:
    `RELAYER_CHAIN_ID`, `RELAYER_CHAIN_ADDRESS`, `RELAYER_EOA_ADDRESS`,
    `RELAYER_KMS_PROVIDER`, `RELAYER_KMS_BLINDER_KEY_ARN`,
    `RELAYER_KMS_SIGNER_KEY_ARN`, `RELAYER_KMS_*_VERSION`,
-   `RELAYER_BUILD_REVISION` — set in the platform config from
-   `fly.toml` `[env]` + CI (`RELAYER_BUILD_REVISION` = git sha).
+   `RELAYER_ALLOWED_ORIGINS`, `RELAYER_BUILD_REVISION` — set in the platform
+   config from `fly.toml` `[env]` + CI (`RELAYER_BUILD_REVISION` = git sha).
+
+   `RELAYER_ALLOWED_ORIGINS` (OBS-549) is the browser CORS allow-list: a
+   comma-separated list of **exact** origins permitted to POST to the relayer
+   from a browser. The diary app posts `application/json`, which is not
+   CORS-safelisted, so the browser sends an `OPTIONS` preflight first; the
+   relayer answers it (204) only when the request `Origin` exactly matches an
+   entry here. **Unset or empty = closed** (no origin is allowed). Never `*`,
+   never a reflected `Origin`. Read once at server construction.
 2. **Platform secrets (secret values):** `RELAYER_ALERT_WEBHOOK`,
    `RELAYER_EOA_SECRET_KEY` — set via the platform secret store
    (`fly secrets set …`), sourced from the Paperclip secret store.

@@ -172,6 +172,13 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
   const startedAtMs = cfg.health?.startedAtMs ?? Date.now();
   // OBS-87: rate shaping on /v1/signals (off unless ratePerMin is set).
   const shaper = cfg.ratePerMin !== undefined ? new RateShaper(cfg.ratePerMin) : undefined;
+  // OBS-549: browser CORS allow-list. Read ONCE at construction, never per
+  // request. Default empty = closed. Exact-origin match only: no wildcard and
+  // no blind reflection of the request Origin.
+  const allowedOrigins = (process.env.RELAYER_ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((o) => o.trim())
+    .filter((o) => o.length > 0);
 
   async function readJson(req: IncomingMessage, limit = 8_192): Promise<unknown> {
     let size = 0;
@@ -209,8 +216,21 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
 
   const server = createServer((req, res) => {
     void (async () => {
+      // OBS-549: CORS response headers. Access-Control-Allow-Origin is
+      // emitted ONLY when the request Origin exactly matches an allow-listed
+      // origin (never a comma-list, never an empty value, never reflected).
+      // Vary: Origin is always set, so a cache cannot serve one origin's
+      // header to another. Every response on the two POST paths - including
+      // the error branches - carries these headers, so the browser can read
+      // the error body.
+      const requestOrigin = typeof req.headers.origin === "string" ? req.headers.origin : "";
+      const originAllowed = requestOrigin !== "" && allowedOrigins.includes(requestOrigin);
+      const corsHeaders = (): Record<string, string> => ({
+        vary: "Origin",
+        ...(originAllowed ? { "access-control-allow-origin": requestOrigin } : {}),
+      });
       const respond = (code: number, body: unknown) => {
-        res.writeHead(code, { "content-type": "application/json" });
+        res.writeHead(code, { "content-type": "application/json", ...corsHeaders() });
         res.end(JSON.stringify(body));
       };
       // OBS-264 + OBS-313 D2: production readiness probe. Exempt from
@@ -242,6 +262,23 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
             reachable: dbReachable,
           },
         });
+      }
+      // OBS-549: CORS preflight. The diary POSTs application/json, which is
+      // not CORS-safelisted, so the browser sends OPTIONS before the POST.
+      // TLS parity with the POST paths: a plain-HTTP preflight is rejected
+      // with 426 tls_required rather than answered. 204 carries no body.
+      if (req.method === "OPTIONS" && (req.url === "/v1/signals" || req.url === "/v1/publish")) {
+        if (cfg.requireTls && req.headers["x-forwarded-proto"] !== "https") {
+          return respond(426, { error: "tls_required" });
+        }
+        res.writeHead(204, {
+          ...corsHeaders(),
+          "access-control-allow-methods": "POST, OPTIONS",
+          "access-control-allow-headers": "content-type",
+          "access-control-max-age": "600",
+        });
+        res.end();
+        return;
       }
       if (req.method !== "POST" || ![ "/v1/signals", "/v1/publish" ].includes(req.url ?? "")) {
         return respond(404, { error: "not_found" });
