@@ -65,6 +65,7 @@ from the Paperclip secret store / provider secret manager, never committed.
 | `RELAYER_PORT` | 8081 (behind LB) | config |
 | `RELAYER_REQUIRE_TLS` | `1` | checklist §3 |
 | `RELAYER_RATE_PER_MIN` | `60` | checklist §4 runbook default |
+| `RELAYER_ALLOWED_ORIGINS` | `https://app.mydaywas.com` (exact app origin; comma-separated list; unset/empty = closed) | config (`deploy/fly.toml` `[env]`) |
 | `RELAYER_ALERT_WEBHOOK` | ops SNS/PagerDuty ingress URL | secret store |
 | `RELAYER_DB_PATH` | local persistent volume path | checklist §2 |
 | `RELAYER_CUSTODY` | `kms` (+ `RELAYER_KMS_*` per `docs/PRODUCTION-IAM.md`) | config + secret store |

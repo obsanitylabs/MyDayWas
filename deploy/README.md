@@ -40,7 +40,10 @@ Every value reaches the running relayer through one of exactly three paths:
    CORS-safelisted, so the browser sends an `OPTIONS` preflight first; the
    relayer answers it (204) only when the request `Origin` exactly matches an
    entry here. **Unset or empty = closed** (no origin is allowed). Never `*`,
-   never a reflected `Origin`. Read once at server construction.
+   never a reflected `Origin`. Read once at server construction. The reference
+   config in this directory (`fly.toml` `[env]`) sets it to the app origin of
+   record, `https://app.mydaywas.com`; if that key is dropped from the platform
+   config the browser path is CLOSED and the diary's only network call fails.
 2. **Platform secrets (secret values):** `RELAYER_ALERT_WEBHOOK`,
    `RELAYER_EOA_SECRET_KEY` — set via the platform secret store
    (`fly secrets set …`), sourced from the Paperclip secret store.
@@ -81,6 +84,22 @@ curl -fsS https://relayer.mydaywas.com/healthz | jq .
 curl -fsS -X POST https://relayer.mydaywas.com/v1/publish -H 'content-type: application/json' -d '{"dayId":<yesterday>}' | jq .
 # expect: signed reconciliation artifact; dry-run submitter name; and NO
 # reconciliation_mismatch alert on the ops sink.
+```
+
+Browser CORS preflight (OBS-549/OBS-628) — the deployed config must actually
+answer the diary's origin; a 204 without `access-control-allow-origin` means the
+allow-list is empty and the beta ships with the POST blocked:
+
+```bash
+curl -sS -o /dev/null -D - -X OPTIONS https://relayer.mydaywas.com/v1/signals \
+  -H 'Origin: https://app.mydaywas.com' \
+  -H 'Access-Control-Request-Method: POST' \
+  -H 'Access-Control-Request-Headers: content-type'
+# expect: 204; access-control-allow-origin: https://app.mydaywas.com;
+# vary: Origin; access-control-allow-methods contains POST; max-age 600.
+curl -sS -o /dev/null -D - -X OPTIONS https://relayer.mydaywas.com/v1/signals \
+  -H 'Origin: https://not-allowed.example.com'
+# expect: 204 but NO access-control-allow-origin (disallowed origin is blocked).
 ```
 
 Alert-sink check: trigger a harmless alert reason (e.g. a malformed submission

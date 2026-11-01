@@ -1,7 +1,9 @@
 # OBS-313 D3: reference platform config for the chosen deployment model —
 # container/VM with a persistent local volume (docs/PRODUCTION-DEPLOY-MODEL.md).
 #
-# PLACEHOLDERS ONLY — this file commits NO secrets and NO real app identity.
+# Placeholders only — this file commits NO secrets. The single real, public
+# value is the browser CORS origin of record (RELAYER_ALLOWED_ORIGINS): a
+# public origin, not app identity or a secret.
 # Provisioning/deployment stays GATED on the OBS-237 external written sign-off
 # (docs/PRODUCTION-DEPLOYMENT.md §6). Costs sit inside the CFO envelope
 # (board-APPROVED lean envelope, OBS-357 `lean-envelope` rev 1: $9.44/mo
@@ -25,6 +27,11 @@ primary_region = "iad"            # placeholder — set at provisioning
   RELAYER_RATE_PER_MIN = "60"
   RELAYER_DB_PATH = "/data/mydaywas-relayer.db"
   RELAYER_SUBMITTER = "dry-run"   # real cutover is CISO-gated (OBS-166/OBS-237)
+  # OBS-628/OBS-549: the browser CORS allow-list that actually turns the
+  # diary's POST path on. Non-secret. Unset or empty = CLOSED (no browser
+  # origin may POST); exact origins only, never "*" or a reflected Origin.
+  # Value = the app origin of record (docs/PRODUCTION-DOMAIN-DECISION.md).
+  RELAYER_ALLOWED_ORIGINS = "https://app.mydaywas.com"
 
 # F3/OBS-234: SQLite WAL on a persistent LOCAL volume, single-writer topology.
 [[mounts]]
