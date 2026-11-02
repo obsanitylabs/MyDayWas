@@ -31,7 +31,7 @@ const PFF_EVENTS = {
 };
 
 const ENUMS = {
-  product: ['ubs', 'pff'],
+  product: ['ubs', 'pff', 'mydaywas'],
   role: ['donor', 'scientist', 'community', 'other'],
   action_type_ubs: ['experiment_run', 'result_save', 'result_share'],
   action_type_pff: ['box_opened', 'collection_viewed'],
@@ -84,8 +84,8 @@ const COMMON_TYPES = {
 export function validateEvent(ev) {
   if (!ev || typeof ev !== 'object') return { ok: false, reason: 'not-an-object' };
   const product = ev.product;
-  if (product !== 'ubs' && product !== 'pff') return { ok: false, reason: 'bad-product' };
-  const table = product === 'ubs' ? UBS_EVENTS : PFF_EVENTS;
+  if (product !== 'ubs' && product !== 'pff' && product !== 'mydaywas') return { ok: false, reason: 'bad-product' };
+  const table = product === 'ubs' || product === 'mydaywas' ? UBS_EVENTS : PFF_EVENTS;
   const name = ev.event_name;
   if (!Object.prototype.hasOwnProperty.call(table, name)) return { ok: false, reason: 'unknown-event-name' };
 
