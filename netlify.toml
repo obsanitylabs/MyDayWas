@@ -5,6 +5,29 @@
 [build.environment]
   NODE_VERSION = "20"
 
+[functions]
+  node_bundler = "esbuild"
+
+# OBS-125 — API routes must stay above any SPA catch-all so the functions are
+# reached instead of the app shell. The functions also declare these paths in
+# their own config; the explicit rules here pin the ordering.
+[[redirects]]
+  from = "/api/collect"
+  to = "/.netlify/functions/collect"
+  status = 200
+
+[[redirects]]
+  from = "/api/insights"
+  to = "/.netlify/functions/insights"
+  status = 200
+
+# OBS-125 — the insights dashboard is a static page under public/insights/.
+# Pin it above any SPA catch-all so /insights/ serves the dashboard, not the app shell.
+[[redirects]]
+  from = "/insights/"
+  to = "/insights/index.html"
+  status = 200
+
 # Video frames never change under the same name, so let browsers cache them
 [[headers]]
   for = "/video*/*"

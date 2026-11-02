@@ -1,0 +1,361 @@
+<!doctype html>
+<!-- OBS-125 — baked-in per-site dashboard (each site's own domain, e.g. /insights/).
+     Auth: enter the site's INSIGHTS_TOKEN (from the company secret store); it is kept in
+     sessionStorage only, sent as a Bearer header to the same-origin /api/insights.
+     Investor board: open on the primary site and add the sibling site's URL to load both
+     products' aggregates side by side, then use the browser's Print → Save as PDF for the
+     weekly export. No analytics scripts load on this page (it never tracks its viewers). -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex,nofollow" />
+    <title>Insights — Obsanity</title>
+    <style>
+      body {
+        font:
+          14px/1.5 ui-monospace,
+          monospace;
+        margin: 2rem;
+        max-width: 900px;
+        color: #111;
+      }
+      table {
+        border-collapse: collapse;
+        margin: 1rem 0;
+      }
+      td,
+      th {
+        border: 1px solid #ccc;
+        padding: 4px 10px;
+        text-align: left;
+      }
+      input {
+        width: 280px;
+      }
+      .err {
+        color: #b00;
+      }
+      h2 {
+        margin-top: 2rem;
+      }
+      nav a {
+        margin-right: 1rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Insights</h1>
+    <nav>
+      <a href="#traction">Traction</a><a href="#product">Product</a
+      ><a href="#quality">Data quality</a><a href="#funnel">Campaign funnel</a
+      ><a href="#onchain">On-chain overlay</a>
+      <button onclick="window.print()">Export PDF</button>
+    </nav>
+    <p>
+      <label>Insights token <input id="tok" type="password" /></label>
+      <button id="go">Load</button>
+      <span id="status"></span>
+    </p>
+    <p>
+      <label
+        >Waitlist admin token (C0) <input id="wtok" type="password"
+      /></label>
+      <label style="margin-left: 1rem"
+        >Waitlist stats base
+        <input
+          id="wbase"
+          placeholder="https://phreaking.fun"
+          style="width: 220px"
+      /></label>
+      <span id="wstatus"></span>
+    </p>
+    <section id="traction">
+      <h2>Investor traction</h2>
+      <div id="t"></div>
+    </section>
+    <section id="product">
+      <h2>Product funnel</h2>
+      <div id="f"></div>
+    </section>
+    <section id="quality">
+      <h2>Data quality</h2>
+      <div id="q"></div>
+    </section>
+    <section id="funnel">
+      <h2>Campaign funnel — phreaking.fun (C0–C3)</h2>
+      <div id="cf"></div>
+    </section>
+    <section id="onchain">
+      <h2>On-chain overlay (admin-only, Sepolia)</h2>
+      <div id="oc"></div>
+    </section>
+
+    <script>
+      const el = (id) => document.getElementById(id);
+      function table(rows) {
+        if (!rows.length) return "<p><em>no data in window</em></p>";
+        return (
+          "<table>" +
+          rows
+            .map(
+              (r, i) =>
+                "<tr>" +
+                r
+                  .map((c, j) => (i ? `<td>${c}</td>` : `<th>${c}</th>`))
+                  .join("") +
+                "</tr>",
+            )
+            .join("") +
+          "</table>"
+        );
+      }
+      async function load(url, tok) {
+        const res = await fetch(url + "/api/insights?days=30&onchain=1", {
+          headers: { authorization: "Bearer " + tok },
+        });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json();
+      }
+      // OBS-303 — C0 waitlist_verified (pff) from the OBS-203 stats API. The stats shapes
+      // vary by service version, so read defensively and never invent a number.
+      async function loadWaitlistC0() {
+        const tok = el("wtok").value;
+        const base =
+          (el("wbase").value || "").replace(/\/+$/, "") || location.origin;
+        if (!tok) return { c0: null, note: "no waitlist admin token entered" };
+        sessionStorage.setItem("obs_waitlist_token", tok);
+        if (el("wbase").value)
+          sessionStorage.setItem("obs_waitlist_base", el("wbase").value);
+        const res = await fetch(base + "/api/waitlist/stats?product=pff", {
+          headers: { authorization: "Bearer " + tok },
+        });
+        if (!res.ok)
+          return {
+            c0: null,
+            note: "HTTP " + res.status + " from waitlist stats",
+          };
+        const d = await res.json();
+        let c0 = null;
+        if (d && d.products && d.products.pff)
+          c0 = d.products.pff.verified ?? d.products.pff.verifiedCount ?? null;
+        if (c0 === null && Array.isArray(d && d.products)) {
+          const row = d.products.find(
+            (p) => p && (p.product === "pff" || p.product_code === "pff"),
+          );
+          if (row)
+            c0 = row.verified ?? row.verifiedCount ?? row.verifiedTotal ?? null;
+        }
+        if (c0 === null && typeof d === "object" && d !== null) {
+          for (const [k, v] of Object.entries(d)) {
+            if (/pff/.test(k) && v && typeof v === "object") {
+              c0 = v.verified ?? v.verifiedCount ?? null;
+              if (c0 !== null) break;
+            }
+          }
+        }
+        return { c0: c0 === undefined ? null : c0, raw: d };
+      }
+      // OBS-303 — render C0–C3 + the on-chain overlay block. All numbers come from the two
+      // read APIs; nothing is recomputed client-side from raw events.
+      async function renderCampaign(d) {
+        const cf = d.campaignFunnel || {};
+        let c0 = null;
+        let c0note = "";
+        try {
+          const w = await loadWaitlistC0();
+          c0 = w.c0;
+          c0note = w.note || "";
+        } catch (e) {
+          c0note = e.message;
+        }
+        const pct = (n) =>
+          n === null || n === undefined ? "—" : (n * 100).toFixed(1) + "%";
+        const rows = [
+          [
+            "C0 waitlist verified (pff)",
+            c0 === null ? "—" : c0,
+            "waitlist_verified · GET /api/waitlist/stats" +
+              (c0note ? " · " + c0note : ""),
+          ],
+          [
+            "C1 first box configured",
+            cf.c_configured ?? "—",
+            "funnel_step pff_purchase/box_configured",
+          ],
+          ["C2 first box opened", cf.c_firstOpen ?? "—", "activation_complete"],
+          [
+            "C3 repeat open",
+            cf.c_repeatOpen ?? "—",
+            "core_action box_opened ≥2 / anonymous_id",
+          ],
+        ];
+        const rates = [
+          ["box-open rate (C1→C2)", pct(cf.boxOpenRate), "target ≥40%"],
+          [
+            "repeat-open rate",
+            pct(cf.repeatOpenRate),
+            "target ≥25% (repeat/openers)",
+          ],
+          ["openers (≥1 open)", cf.openers ?? "—", "distinct anonymous_id"],
+        ];
+        el("cf").innerHTML =
+          table([["step", "distinct users", "definition"], ...rows]) +
+          table([["rate", "value", "note"], ...rates]);
+        const oc = d.onchainOverlay;
+        if (!oc) {
+          el("oc").innerHTML = "<p><em>on-chain overlay not requested</em></p>";
+          return;
+        }
+        if (oc.error) {
+          el("oc").innerHTML =
+            '<p><span class="err">on-chain overlay unavailable: ' +
+            (oc.message || oc.error) +
+            "</span></p>";
+          return;
+        }
+        const dep =
+          oc.deposits && oc.deposits.error
+            ? // full deposit-read failure degrades explicitly — no fabricated aggregates
+              []
+            : Object.entries(oc.deposits || {}).map(([box, s]) => [
+                box,
+                s.count,
+                s.native + " ETH",
+                s.erc20Transfers,
+                s.erc20Tokens ?? "—",
+              ]);
+        const pause = Object.entries(oc.pauseState || {}).map(([name, s]) =>
+          s.error
+            ? // read-failed boxes degrade explicitly — never fabricated "live" state
+              [name, "read-failed", s.message || "—", "—"]
+            : [
+                name,
+                s.paused ? "PAUSED" : "live",
+                s.unpauseReleaseAt,
+                s.totalValueAtRiskUsd + " USD",
+              ],
+        );
+        const ft = oc.failedTx || {};
+        el("oc").innerHTML =
+          table([
+            ["box", "paused", "unpauseReleaseAt", "totalValueAtRisk (USD 1e8)"],
+            ...pause,
+          ]) +
+          table([
+            [
+              "box",
+              "deposits",
+              "native volume",
+              "erc20 transfers",
+              "erc20 tokens",
+            ],
+            ...dep,
+          ]) +
+          (oc.deposits && oc.deposits.error
+            ? '<p><span class="err">deposit read failed: ' +
+              (oc.deposits.message || "—") +
+              "</span></p>"
+            : oc.depositsRead && oc.depositsRead.note
+              ? "<p><small>" + oc.depositsRead.note + "</small></p>"
+              : "") +
+          "<p>failed-tx rate (last " +
+          oc.failedTxScanBlocks +
+          " blocks): <strong>" +
+          (ft.rate === null || ft.rate === undefined
+            ? "n/a"
+            : (ft.rate * 100).toFixed(1) + "%") +
+          "</strong> (" +
+          (ft.attempted ?? 0) +
+          " attempted / " +
+          (ft.failed ?? 0) +
+          " failed) " +
+          (ft.note || "") +
+          "</p>" +
+          "<p>revenue/fees: " +
+          (oc.feesNote || "—") +
+          "</p>" +
+          "<p>" +
+          (oc.transfersNote || "") +
+          "</p>";
+      }
+      function render(d, siteLabel) {
+        const wau = Object.entries(d.wau || {}).map(([w, n]) => [w, n]);
+        const coh = Object.entries(d.retentionCohorts || {}).map(
+          ([day2, c]) => [day2, c.users, c.d1, c.d7, c.d30],
+        );
+        const ch = Object.entries(d.channelMix || {})
+          .sort((a2, b2) => b2[1] - a2[1])
+          .map(([k, n]) => [k, n]);
+        const st = [
+          ["share rate", d.shareRate],
+          ["new users (30d)", d.newUsers],
+          ["activation rate", d.activationRate],
+          ["activated users", d.activatedUsers],
+        ];
+        el("t").innerHTML +=
+          `<h3>${siteLabel}</h3>` +
+          table([["ISO week", "WAU"], ...wau]) +
+          table([["cohort day", "users", "D1", "D7", "D30"], ...coh]) +
+          table([["metric", "value"], ...st]) +
+          table([["channel (source/medium)", "users"], ...ch]);
+        const fn = Object.entries(d.funnels || {}).flatMap(([p, steps]) =>
+          Object.entries(steps).map(([k, n]) => [p, k, n]),
+        );
+        el("f").innerHTML += table([
+          ["product", "funnel step", "unique users"],
+          ...fn,
+        ]);
+        const qd = Object.entries(d.dataQuality || {}).map(([day2, q]) => [
+          day2,
+          q.accepted || 0,
+          q.rejected || 0,
+          q.droppedAttributes || 0,
+          q.botFiltered || 0,
+        ]);
+        const pv = Object.entries(d.pageviews || {}).map(([p, n]) => {
+          const other = Object.entries(d.eventCounts || {})
+            .filter(([k]) => k.startsWith(p + ":") && !k.endsWith(":page_view"))
+            .reduce((a, [, n2]) => a + n2, 0);
+          return [p, n, other, n ? +(other / n).toFixed(2) : 0];
+        });
+        el("q").innerHTML +=
+          `<h3>${siteLabel}</h3>` +
+          table([
+            ["day", "accepted", "rejected", "dropped attrs", "bot-filtered"],
+            ...qd,
+          ]) +
+          table([
+            [
+              "product",
+              "pageviews",
+              "non-pageview events",
+              "ratio (sanity 0.2–2.0)",
+            ],
+            ...pv,
+          ]);
+      }
+      el("go").onclick = async () => {
+        el("status").textContent = "loading…";
+        el("t").innerHTML = "";
+        el("f").innerHTML = "";
+        el("q").innerHTML = "";
+        try {
+          const tok = el("tok").value;
+          sessionStorage.setItem("obs_insights_token", tok);
+          const data = await load("", tok);
+          await render(data, location.hostname);
+          await renderCampaign(data);
+          const peer = new URLSearchParams(location.search).get("peer"); // investor board: ?peer=https://phreaking.fun
+          if (peer) await render(await load(peer, tok), new URL(peer).hostname);
+          el("status").textContent = "ok";
+        } catch (e) {
+          el("status").innerHTML = '<span class="err">' + e.message + "</span>";
+        }
+      };
+      el("tok").value = sessionStorage.getItem("obs_insights_token") || "";
+      el("wtok").value = sessionStorage.getItem("obs_waitlist_token") || "";
+      el("wbase").value = sessionStorage.getItem("obs_waitlist_base") || "";
+    </script>
+  </body>
+</html>
