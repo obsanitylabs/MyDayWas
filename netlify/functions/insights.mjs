@@ -7,6 +7,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { getStore } from "@netlify/blobs";
 import { campaignFunnel } from "../shared/campaignFunnel.mjs";
+import { mdwFunnel } from "../shared/mdwFunnel.mjs";
 
 const ALLOWED_ORIGIN = (process.env.INSIGHTS_ALLOWED_ORIGIN || "").trim(); // sibling site for the investor board
 const CORS = ALLOWED_ORIGIN
@@ -184,6 +185,9 @@ export default async (req) => {
     // OBS-303 — pff campaign funnel C1–C3. C0 (waitlist_verified) is joined in the
     // dashboard from GET /api/waitlist/stats (OBS-203); not recomputed here.
     campaignFunnel: campaignFunnel(events),
+    // OBS-350 — mdw signals opt-in (F3) + follow-up usage (F4), metric dictionary v3.
+    // Dormant pre-launch: no mdw events exist, so every rate is null (0 / n-a).
+    mdwFunnel: mdwFunnel(events),
   };
 
   // OBS-303 — admin-only on-chain overlay. Served in the same token-gated response,
