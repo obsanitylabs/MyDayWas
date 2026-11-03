@@ -62,17 +62,47 @@ time (Netlify env) per `docs/PRODUCTION-DOMAIN-DECISION.md`.
 
 ## Deploy [gated]
 
+**GATE — read first:** every step below executes **only after** the OBS-237
+external written sign-off and the stage-6 CISO control sign-off are recorded.
+Nothing here provisions, deploys or spends by itself, and no step may run
+ahead of that gate.
+
 Run the commands from the **repo root** (the working-directory argument is what
-sets the Docker build context):
+sets the Docker build context). Placeholders (`mydaywas-relayer` app,
+`iad` region, `mydaywas_relayer_data` volume name) come from
+`relayer/fly.toml` and are substituted at provisioning — never with a secret
+value (secret *names* only: `RELAYER_ALERT_WEBHOOK`, `RELAYER_EOA_SECRET_KEY`,
+`netlify-obsanity-token`; secrets are injected from the Paperclip secret
+store / platform secret manager at deploy time).
 
 ```bash
-# 1. Create/import the app from the reference config (no build yet).
+# Step 1 — App: create/import the Fly app from the reference config (no build
+#   yet). `fly launch` creates only the *.fly.dev hostname.
 fly launch --config relayer/fly.toml --no-deploy
-# 2. Inject the secret values from the Paperclip secret store.
+# Step 2 — Volume: create the persistent volume named in relayer/fly.toml
+#   [[mounts]] (source `mydaywas_relayer_data`, destination `/data`) in the
+#   app's region — BEFORE the first deploy: a machine cannot mount a volume
+#   that does not exist. (https://fly.io/docs/flyctl/volumes-create/)
+fly volumes create mydaywas_relayer_data --app mydaywas-relayer --region iad
+# Step 3 — Custom domain + TLS: attach the relayer origin of record and
+#   provision its Let's Encrypt certificate. `fly launch` does NOT create the
+#   custom-domain certificate, and `force_https = true` in the config does not
+#   either — this step does. (https://fly.io/docs/flyctl/certs-add/)
+fly certs add relayer.mydaywas.com --app mydaywas-relayer
+# Step 4 — Secrets: inject the secret values from the Paperclip secret store.
 fly secrets set -a mydaywas-relayer RELAYER_ALERT_WEBHOOK=… RELAYER_EOA_SECRET_KEY=…
-# 3. Build + deploy. `relayer` is flyctl's working directory, so it reads
-#    relayer/fly.toml and relayer/Dockerfile there.
+# Step 5 — DNS record: create `relayer.mydaywas.com` as a CNAME to the app's
+#   CNAME target (the unique *.fly.dev hostname shown by `fly certs add` /
+#   `fly certs setup`) in the Netlify DNS zone `mydaywas.com`
+#   (zone id `6ad5a320…`) — NOT at the registrar — via the managed
+#   `netlify-obsanity-token` secret. (https://fly.io/docs/networking/custom-domain/)
+# Step 6 — Deploy: build + deploy. `relayer` is flyctl's working directory, so
+#   it reads relayer/fly.toml and relayer/Dockerfile there.
 fly deploy relayer
+# Step 7 — Verify: wait for DNS resolution, confirm the certificate is issued,
+#   then run the Verify block below — `https://relayer.mydaywas.com/healthz`
+#   must return 200 over TLS.
+fly certs check relayer.mydaywas.com
 ```
 
 **How the build context is resolved:** `fly deploy relayer` changes flyctl's
@@ -93,9 +123,12 @@ the landing tree instead and produces the wrong (or no) image.
    The in-build gate runs against the relayer's own manifest (step 3's
    `relayer` context), not the repo-root landing manifest.
 3. **Deploy** one instance (single-writer topology) with the persistent volume
-   mounted at `/data` (`RELAYER_DB_PATH=/data/mydaywas-relayer.db`).
-   Keep `RELAYER_SUBMITTER=dry-run` — the real-submitter cutover is CISO-gated
-   (OBS-166) and additionally requires the OBS-237 sign-off.
+   mounted at `/data` (`RELAYER_DB_PATH=/data/mydaywas-relayer.db`). The
+   volume (sequence Step 2 above) must already exist in the region before
+   this step; the custom-domain certificate (Step 3) and the DNS record
+   (Step 5) are what make `https://relayer.mydaywas.com` resolve and serve
+   TLS. Keep `RELAYER_SUBMITTER=dry-run` — the real-submitter cutover is
+   CISO-gated (OBS-166) and additionally requires the OBS-237 sign-off.
 4. **Verify** (below).
 5. **Record** the deployed revision (`RELAYER_BUILD_REVISION`), instance/volume
    ids, and keyIds on the deploy record (OBS-264 evidence).

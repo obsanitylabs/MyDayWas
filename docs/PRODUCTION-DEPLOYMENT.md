@@ -81,39 +81,64 @@ Full contract + injection paths: `relayer/.env.production.example` and
 
 ## 3. Runbook (deployment)
 
+All commands [gated] per §6; placeholders (`mydaywas-relayer` app, `iad`
+region, `mydaywas_relayer_data` volume) come from `relayer/fly.toml` and are
+substituted at provisioning. The ordered sequence of record is
+`deploy/README.md` → Deploy [gated] (Steps 1–7); the same steps, condensed:
+
 1. **Pre-flight gates:** OBS-237 written sign-off recorded; OBS-228 M6
    complete; CISO control sign-off (stage 6) complete. Abort if any missing.
 2. **Provision** hosting within the envelope; attach KMS key objects (§1.2);
-   inject env from the secret store.
-3. **Build + deploy the relayer from the repo root:** `fly deploy relayer`.
+   inject env from the secret store. Create/import the app first with
+   `fly launch --config relayer/fly.toml --no-deploy`.
+3. **Volume [before the first deploy]:** create the persistent volume named in
+   `relayer/fly.toml` `[[mounts]]` (`mydaywas_relayer_data`, mounted at
+   `/data`) in the app's region — a machine cannot mount a volume that does
+   not exist:
+   `fly volumes create mydaywas_relayer_data --app mydaywas-relayer --region iad`
+   (https://fly.io/docs/flyctl/volumes-create/).
+4. **Custom domain + TLS:** attach the relayer origin of record and provision
+   its certificate — `fly launch` creates only the `*.fly.dev` hostname, and
+   `force_https = true` does not create a custom-domain certificate:
+   `fly certs add relayer.mydaywas.com --app mydaywas-relayer`
+   (https://fly.io/docs/flyctl/certs-add/).
+5. **Build + deploy the relayer from the repo root:** `fly deploy relayer`.
    `relayer` is flyctl's working directory, so it reads `relayer/fly.toml` and
    `relayer/Dockerfile` there and uses `relayer/` as the Docker build context —
    the relayer's own manifest (`typecheck`/`test`), `tsconfig.json`,
    `vitest.config.mts`, `src/`, `test/`, exactly what CI builds with
-   `context: relayer`. Create/import the app first with
-   `fly launch --config relayer/fly.toml --no-deploy`.
+   `context: relayer`.
    Then `GET /healthz` returns 200 over TLS via the LB with
    the readiness body (`docs/PRODUCTION-DEPLOYMENT.md` → OBS-313 D2):
    `ok`, `service`, `buildRevision`, `uptimeSec`, `submitter` (dry-run/real),
    `custody` (provider + versioned `blinderKeyId`/`signerKeyId`), `db`
    (backend + reachable); internal probe on plain HTTP also 200 (healthz is
    TLS-exempt by design). No secrets or payload data in the body.
-4. **Deploy contract** to the approved production chain via
+6. **DNS record [Netlify DNS, not the registrar]:** create
+   `relayer.mydaywas.com` as a CNAME to the app's CNAME target (the unique
+   `*.fly.dev` hostname shown by `fly certs add` / `fly certs setup`;
+   https://fly.io/docs/networking/custom-domain/) in the **Netlify DNS** zone
+   `mydaywas.com` (zone id `6ad5a320…`) with the managed
+   `netlify-obsanity-token` secret. Wait for resolution, confirm the
+   certificate is issued (`fly certs check relayer.mydaywas.com`), and verify
+   `https://relayer.mydaywas.com/healthz` returns **200 over TLS** before any
+   traffic (`docs/PRODUCTION-DOMAIN-DECISION.md`).
+7. **Deploy contract** to the approved production chain via
    `contracts/deploy.mjs` (Sepolia-gated key path today; production chain per
    §1.3 written approval). Record address + tx + block in
    `docs/CONTRACT-ADDRESSES.md`.
-5. **Verify on-chain address matches repo source:** recompile with
+8. **Verify on-chain address matches repo source:** recompile with
    `contracts/compile.mjs` (solc 0.8.24, optimizer 200, cancun) and diff the
    runtime bytecode at the deployed address against the compiled artifact —
    the same procedure used for the 2026-10-31 staging redeploy (first-divergence
    check). Selector `recordBatch` == `0x0f4d576c`.
-6. **Wire the app:** set `VITE_RELAYER_URL=https://relayer.mydaywas.com` in
+9. **Wire the app:** set `VITE_RELAYER_URL=https://relayer.mydaywas.com` in
    the diary production build; attach `app.mydaywas.com` to Netlify; confirm
    the landing CTA resolves. App URL must return 200 over TLS.
-7. **Monitoring:** LB uptime probe on `GET /healthz`; alert sink
-   (`RELAYER_ALERT_WEBHOOK`) wired for all alert reasons (checklist §5);
-   reconciliation-vs-`BatchRecorded` monitor live **before traffic** (CISO
-   OBS-235 condition).
+10. **Monitoring:** LB uptime probe on `GET /healthz`; alert sink
+    (`RELAYER_ALERT_WEBHOOK`) wired for all alert reasons (checklist §5);
+    reconciliation-vs-`BatchRecorded` monitor live **before traffic** (CISO
+    OBS-235 condition).
 
 ## 4. Rollback path
 

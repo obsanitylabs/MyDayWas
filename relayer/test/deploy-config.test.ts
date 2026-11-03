@@ -28,6 +28,19 @@
  * `docs/` is in the image build context. The guard is enforced by the repo CI
  * job, where those trees are present (and where the app-level CORS contract is
  * additionally covered by `test/cors.test.ts`).
+ *
+ * OBS-701 regression guard (provisioning steps): the reference config
+ * `relayer/fly.toml` declares a named `[[mounts]]` volume, and the origin of
+ * record is the custom hostname `relayer.mydaywas.com` behind a TLS LB, but
+ * the deploy runbook's sequence had no volume-creation, custom-domain/
+ * certificate, or DNS-record step — omissions that surface only at
+ * provisioning time, after the Fly.io account exists and after the OBS-237
+ * sign-off. The record must be created in the **Netlify DNS** zone
+ * `mydaywas.com` (not the registrar) with the managed `netlify-obsanity-token`
+ * secret. The assertions below read the volume name and region out of the
+ * config (never hard-coded), fail on a runbook missing the three steps, and
+ * keep `docs/PRODUCTION-DEPLOYMENT.md` and
+ * `docs/PRODUCTION-DOMAIN-DECISION.md` consistent with the runbook.
  */
 import { describe, expect, it } from "vitest";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
@@ -52,7 +65,20 @@ const ENV_TEMPLATE = resolve(repoRoot, "relayer/.env.production.example");
 const DEPLOY_DOC = resolve(repoRoot, "docs/PRODUCTION-DEPLOYMENT.md");
 const DEPLOY_README = resolve(repoRoot, "deploy/README.md");
 const DEPLOY_MODEL_DOC = resolve(repoRoot, "docs/PRODUCTION-DEPLOY-MODEL.md");
+const DOMAIN_DECISION_DOC = resolve(
+  repoRoot,
+  "docs/PRODUCTION-DOMAIN-DECISION.md",
+);
 const CI_WORKFLOW = resolve(repoRoot, ".github/workflows/ci.yml");
+
+// The relayer origin of record (docs/PRODUCTION-DOMAIN-DECISION.md): the
+// custom hostname behind the TLS LB, and the zone that serves it. The zone is
+// a Netlify DNS zone — NOT the registrar — so the record-creation step must
+// say where the record goes and with which managed secret name.
+const RELAYER_HOSTNAME = "relayer.mydaywas.com";
+const APP_ZONE = "mydaywas.com";
+const NETLIFY_DNS_ZONE_ID_PREFIX = "6ad5a320";
+const NETLIFY_TOKEN_SECRET_NAME = "netlify-obsanity-token";
 
 // The documented `fly deploy` working-directory argument; it is also the
 // effective Docker build context.
@@ -91,6 +117,61 @@ function readStringTable(toml: string, table: string): Record<string, string> {
 
 function readEnvBlock(toml: string): Record<string, string> {
   return readStringTable(toml, "[env]");
+}
+
+/**
+ * Entries of every `[[mounts]]` array-of-tables in fly.toml. A machine cannot
+ * mount a volume that does not exist, so whatever is declared here must be
+ * created by the runbook before the first deploy (OBS-701).
+ */
+interface FlyMount {
+  source: string;
+  destination: string;
+}
+
+function readMounts(toml: string): FlyMount[] {
+  const mounts: FlyMount[] = [];
+  let current: Partial<FlyMount> | null = null;
+  for (const rawLine of toml.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line === "[[mounts]]") {
+      current = {};
+      mounts.push(current as FlyMount);
+      continue;
+    }
+    if (line.startsWith("[")) {
+      current = null;
+      continue;
+    }
+    if (current === null) continue;
+    const match = line.match(
+      /^([A-Za-z0-9_.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')\s*(?:#.*)?$/,
+    );
+    if (!match) continue;
+    if (match[1] === "source") current.source = match[2] ?? match[3] ?? "";
+    if (match[1] === "destination")
+      current.destination = match[2] ?? match[3] ?? "";
+  }
+  return mounts.filter(
+    (m): m is FlyMount => m.source !== "" && m.destination !== "",
+  );
+}
+
+/** Top-level (no `[table]`) string scalars from fly.toml, e.g. primary_region. */
+function readTopLevelScalars(toml: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const rawLine of toml.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.startsWith("[")) break; // scalars only appear before any table
+    const match = line.match(
+      /^([A-Za-z0-9_.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')\s*(?:#.*)?$/,
+    );
+    if (!match) continue;
+    const key = match[1];
+    if (key === undefined) continue;
+    out[key] = match[2] ?? match[3] ?? "";
+  }
+  return out;
 }
 
 /** Every `fly deploy <argument>` command string in a document. */
@@ -354,6 +435,98 @@ describeIfDeploy(
       expect(readFileSync(DEPLOY_README, "utf8")).toContain("relayer/fly.toml");
       expect(readFileSync(DEPLOY_DOC, "utf8")).toContain("relayer/fly.toml");
       expect(readFileSync(FLY_TOML, "utf8")).toContain("fly deploy relayer");
+    });
+  },
+);
+
+describeIfDeploy(
+  "OBS-701: the runbook provisions the volume, the custom domain/TLS and the DNS record the config declares",
+  () => {
+    // The config of record, read — never hard-coded — so a renamed volume or
+    // region drifts the guard together with the config.
+    const toml = readFileSync(FLY_TOML, "utf8");
+    const mounts = readMounts(toml);
+    const scalars = readTopLevelScalars(toml);
+    const runbook = readFileSync(DEPLOY_README, "utf8");
+
+    it("declares exactly one mounted volume, and the DB lives inside it", () => {
+      expect(mounts.length).toBe(1);
+      const mount = mounts[0];
+      expect(mount).not.toBeUndefined();
+      if (mount === undefined) return;
+      expect(mount.source.length).toBeGreaterThan(0);
+      expect(mount.destination).toBe("/data");
+      const env = readEnvBlock(toml);
+      expect(env.RELAYER_DB_PATH?.startsWith(mount.destination)).toBe(true);
+    });
+
+    it("has a volume-creation step for that volume, in its region, before the first deploy", () => {
+      const mount = mounts[0];
+      expect(mount).not.toBeUndefined();
+      if (mount === undefined) return;
+      expect(scalars.app).toBeDefined();
+      expect(scalars.primary_region).toBeDefined();
+      // `fly volumes create <name> --app/--region` per Fly's flyctl reference.
+      expect(runbook).toContain("fly volumes create");
+      expect(runbook).toContain(mount.source);
+      expect(runbook).toContain(scalars.primary_region ?? "");
+      // The volume must exist BEFORE the machine mounts it: the creation step
+      // precedes the deploy step in the runbook's ordered sequence.
+      const volumeAt = runbook.indexOf("fly volumes create");
+      const deployAt = runbook.indexOf(`fly deploy ${WORKING_DIR}`);
+      expect(volumeAt).toBeGreaterThan(-1);
+      expect(deployAt).toBeGreaterThan(-1);
+      expect(volumeAt).toBeLessThan(deployAt);
+    });
+
+    it("has a custom-domain + certificate step for the relayer origin of record", () => {
+      // `fly certs add <hostname>` attaches the custom domain and provisions
+      // its Let's Encrypt certificate; `fly launch` creates only the
+      // *.fly.dev hostname and `force_https = true` does not create one.
+      expect(runbook).toContain("fly certs add");
+      expect(runbook).toContain(RELAYER_HOSTNAME);
+    });
+
+    it("has a DNS-record step in the Netlify DNS zone (not the registrar), with resolution + healthz verification", () => {
+      expect(runbook).toContain("CNAME");
+      expect(runbook).toContain("Netlify DNS");
+      expect(runbook).toContain(APP_ZONE);
+      expect(runbook).toContain(NETLIFY_DNS_ZONE_ID_PREFIX);
+      expect(runbook).toContain(NETLIFY_TOKEN_SECRET_NAME);
+      // The step must verify the record resolves and the origin serves 200.
+      expect(runbook).toContain(`${RELAYER_HOSTNAME}/healthz`);
+    });
+
+    it("keeps the production deployment record consistent with the runbook (the same three steps)", () => {
+      const doc = readFileSync(DEPLOY_DOC, "utf8");
+      const mount = mounts[0];
+      expect(mount).not.toBeUndefined();
+      expect(doc).toContain("fly volumes create");
+      if (mount !== undefined) expect(doc).toContain(mount.source);
+      expect(doc).toContain("fly certs add");
+      expect(doc).toContain(RELAYER_HOSTNAME);
+      expect(doc).toContain("Netlify DNS");
+      expect(doc).toContain(NETLIFY_TOKEN_SECRET_NAME);
+    });
+
+    it("the domain-decision record's cross-reference resolves to steps that exist in the runbook", () => {
+      const doc = readFileSync(DOMAIN_DECISION_DOC, "utf8");
+      // The recorded promise: creation of the relayer record is an explicit
+      // runbook step. The reference must name `deploy/README.md` and its
+      // steps by their `Step <n> — <name>` titles, and every title must
+      // resolve against the runbook's deploy sequence.
+      const paragraph = doc
+        .split(/\n{2,}/)
+        .find((p) => p.includes("Creation of the record"));
+      expect(paragraph).toBeDefined();
+      const refs = [...(paragraph ?? "").matchAll(
+        /Step (\d+) \(([A-Za-z+ -]+)\)/g,
+      )];
+      expect(refs.length).toBeGreaterThanOrEqual(3);
+      expect(paragraph).toContain("deploy/README.md");
+      for (const [, step, name] of refs) {
+        expect(runbook).toContain(`# Step ${step} — ${name}`);
+      }
     });
   },
 );

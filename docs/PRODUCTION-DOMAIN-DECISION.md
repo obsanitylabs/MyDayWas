@@ -67,5 +67,11 @@ the record cannot point at a load balancer that does not exist, and the
 production deploy itself remains gated behind OBS-237 written sign-off and the
 stage-6 CISO control sign-off. The landing CTA does not point at the relayer
 host, so this deferral carries no funnel hazard. Creation of the record
-(CNAME/ALIAS to the LB hostname) is an explicit step of the OBS-264 runbook
-(steps 2–3 + step 6 wiring).
+(CNAME to the app's Fly CNAME target) is an explicit step of the OBS-264
+runbook: `deploy/README.md` → Deploy [gated] → Step 2 (Volume),
+Step 3 (Custom domain + TLS), Step 5 (DNS record) and Step 7 (Verify) — the
+record is created in the **Netlify DNS** zone `mydaywas.com` (zone id
+`6ad5a320…`) with the managed `netlify-obsanity-token` secret (not at the
+registrar), and resolution plus `https://relayer.mydaywas.com/healthz` 200
+over TLS are verified before any traffic. The same steps are recorded in
+`docs/PRODUCTION-DEPLOYMENT.md` §3.
