@@ -66,13 +66,39 @@ from the Paperclip secret store / provider secret manager, never committed.
 | `RELAYER_REQUIRE_TLS` | `1` | checklist §3 |
 | `RELAYER_RATE_PER_MIN` | `60` | checklist §4 runbook default |
 | `RELAYER_ALLOWED_ORIGINS` | `https://app.mydaywas.com` (exact app origin; comma-separated list; unset/empty = closed) | config (`relayer/fly.toml` `[env]`) |
+| `RELAYER_CLIENT_IP_HEADER` | `fly-client-ip` (platform-set header read for the rate-shaping client IP; falls back to the trusted last hop of `x-forwarded-for`, then the socket address) | config (`relayer/fly.toml` `[env]`) |
 | `RELAYER_ALERT_WEBHOOK` | ops SNS/PagerDuty ingress URL | secret store |
+| `RELAYER_PUBLISH_SECRET` | **mandatory** in the production profile — shared secret for the `x-relayer-auth` header on `POST /v1/publish` (fail-closed boot without it) | secret store |
 | `RELAYER_DB_PATH` | local persistent volume path | checklist §2 |
 | `RELAYER_CUSTODY` | `kms` (+ `RELAYER_KMS_*` per `docs/PRODUCTION-IAM.md`) | config + secret store |
 | `RELAYER_SUBMITTER` | `dry-run` (default; real cutover CISO-gated) | config |
 | `RELAYER_CHAIN_RPC` / `RELAYER_CHAIN_ID` / `RELAYER_CHAIN_ADDRESS` | production L2 RPC + expected chain id + address | config (§1.3) |
 | `RELAYER_BUILD_REVISION` | git sha | CI/deploy |
 | `VITE_RELAYER_URL` (app build) | `https://relayer.mydaywas.com` | §1.4 |
+
+### 2.1 Operator publish auth and client-IP header (M1/H1, OBS-760)
+
+- **`RELAYER_PUBLISH_SECRET`** — the shared secret the operator publish endpoint
+  `POST /v1/publish` requires in the **`x-relayer-auth`** request header. The
+  app ingest path `POST /v1/signals` does **not** use this header. The relayer
+  compares the value constant-time and returns `401` on a missing or invalid
+  header. **It is mandatory in the production profile:** with the durable
+  profile (`RELAYER_DB_PATH` set) the relayer **refuses to start** without it
+  (`refusing to start: production profile … requires RELAYER_PUBLISH_SECRET`).
+  Provision it through the platform secret store — **not** a file, **not** a
+  committed value; only the secret **name** appears in the repo.
+  `RELAYER_PUBLISH_AUTH_HEADER` optionally overrides the header name (default
+  `x-relayer-auth`). **Rotation:** set the new secret in the platform secret
+  store and restart the machine; in-flight requests still carrying the old
+  header get `401` until the calling operator is updated.
+- **`RELAYER_CLIENT_IP_HEADER`** — the platform header the relayer reads for
+  the client IP used by rate shaping (default `fly-client-ip`, set by the Fly
+  edge). When it is absent the relayer uses the **trusted last hop** of
+  `x-forwarded-for` (the value appended by our own proxy) and ignores the
+  attacker-controlled leftmost value; failing both, the socket address. If the
+  platform stops setting this header (or the key is dropped/renamed), rate
+  shaping silently keys on the wrong source and the H1 flood protection is
+  weaker than it looks.
 
 Full contract + injection paths: `relayer/.env.production.example` and
 `deploy/README.md`. Decision records: `docs/PRODUCTION-DEPLOY-MODEL.md`,
@@ -89,8 +115,10 @@ substituted at provisioning. The ordered sequence of record is
 1. **Pre-flight gates:** OBS-237 written sign-off recorded; OBS-228 M6
    complete; CISO control sign-off (stage 6) complete. Abort if any missing.
 2. **Provision** hosting within the envelope; attach KMS key objects (§1.2);
-   inject env from the secret store. Create/import the app first with
-   `fly launch --config relayer/fly.toml --no-deploy`.
+   inject env from the secret store — **including the mandatory
+   `RELAYER_PUBLISH_SECRET`** (the production profile refuses to start without
+   it, so provision it here, before the first deploy). Create/import the app
+   first with `fly launch --config relayer/fly.toml --no-deploy`.
 3. **Volume [before the first deploy]:** create the persistent volume named in
    `relayer/fly.toml` `[[mounts]]` (`mydaywas_relayer_data`, mounted at
    `/data`) in the app's region — a machine cannot mount a volume that does
@@ -136,7 +164,9 @@ substituted at provisioning. The ordered sequence of record is
    the diary production build; attach `app.mydaywas.com` to Netlify; confirm
    the landing CTA resolves. App URL must return 200 over TLS.
 10. **Monitoring:** LB uptime probe on `GET /healthz`; alert sink
-    (`RELAYER_ALERT_WEBHOOK`) wired for all alert reasons (checklist §5);
+    (`RELAYER_ALERT_WEBHOOK`) wired for all alert reasons — the sink now
+    carries **nine** reason codes (a superset of the required seven),
+    including the new `publication_missing` reason (checklist §5);
     reconciliation-vs-`BatchRecorded` monitor live **before traffic** (CISO
     OBS-235 condition).
 
