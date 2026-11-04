@@ -7,7 +7,7 @@
 import { MS_PER_DAY, SENTIMENTS, type Sentiment } from "./types.ts";
 import type { SignalStoreCore } from "./store.ts";
 import type { KeyCustody } from "./keycustody.ts";
-import type { ChainSubmitter, RecordBatch } from "./chain.ts";
+import { BroadcastUncertainError, type ChainSubmitter, type RecordBatch } from "./chain.ts";
 import { log } from "./log.ts";
 import { MemoryPublicationLedger, type PublicationLedger } from "./ledger.ts";
 
@@ -179,9 +179,14 @@ export class PublicationPipeline {
     try {
       result = await this.chain.submitRecordBatch(batch);
     } catch (e) {
-      // Trust assumption: submitters throw only when no chain effect occurred,
-      // so releasing makes the day safely retryable.
-      await this.ledger.release(dayId);
+      // H2.3 (OBS-760): release the claim ONLY on a definitive pre-broadcast /
+      // no-effect failure. A `BroadcastUncertainError` means the tx MAY have been
+      // broadcast (submit accepted / receipt unknown): releasing would make the
+      // day retryable and double-commit the add-only deltas. Every other throw is
+      // a definite no-effect failure, so the day stays safely retryable.
+      if (!(e instanceof BroadcastUncertainError)) {
+        await this.ledger.release(dayId);
+      }
       throw e;
     }
 

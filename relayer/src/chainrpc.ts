@@ -26,6 +26,7 @@ import { etc as secpUtils, sign as secpSign, verify as secpVerify, getPublicKey 
 import { keccak_256 } from "@noble/hashes/sha3";
 import { sha256 } from "@noble/hashes/sha256";
 import { hmac } from "@noble/hashes/hmac";
+import { BroadcastUncertainError } from "./chain.ts";
 
 // RFC6979 deterministic-k needs an hmac for @noble/secp256k1 sync signing.
 secpUtils.hmacSha256Sync = (key, ...msgs) => {
@@ -110,12 +111,39 @@ function rlpWrap(b: Uint8Array, offset: number): Uint8Array {
  * Locally-signing EIP-155 legacy-tx sender for `recordBatch`. One tx per
  * send; nonce is per-process monotonic (bootstrap fetches the pending count).
  * The EOA key is used only in memory to sign; it is never logged or echoed.
+ *
+ * H2 (OBS-760) corrections:
+ *  - **Serialized sends**: `send` calls are chained through a promise mutex, so
+ *    concurrent publishes can never read/increment the nonce in an interleaved
+ *    way (the old code signed the same nonce for two txs and one dropped).
+ *  - **Atomic nonce reservation**: the nonce is reserved (advanced) as part of
+ *    the serialized critical section BEFORE broadcast; a definite pre-broadcast
+ *    failure gives it back (no stuck gap), an ambiguous failure keeps it (never
+ *    reuse a nonce that may be in the mempool).
+ *  - **Receipt confirmation**: `send` returns only after
+ *    `eth_getTransactionReceipt` reports `status == 1`; a reverted tx
+ *    (`status == 0`) throws (a definite no-effect failure), and an unknown
+ *    inclusion state throws `BroadcastUncertainError` (the pipeline keeps the
+ *    claim). `eth_sendRawTransaction` returning pre-inclusion is no longer
+ *    mistaken for a commit.
  */
+export interface ReceiptPollOpts {
+  /** Max `eth_getTransactionReceipt` attempts before giving up (inclusion unknown). */
+  attempts?: number;
+  initialDelayMs?: number;
+  backoffFactor?: number;
+  maxDelayMs?: number;
+}
+
+const DEFAULT_RECEIPT_POLL = { attempts: 15, initialDelayMs: 1_000, backoffFactor: 1.5, maxDelayMs: 10_000 } as const;
+
 export class RpcLegacySender {
   private readonly rpc: JsonRpc;
   private readonly keyBytes: Uint8Array;
   private readonly pub65: Uint8Array;
   private nonce: bigint | null = null;
+  /** H2.1: serializes sends so concurrent callers never reuse a nonce. */
+  private sendQueue: Promise<void> = Promise.resolve();
   readonly eoaAddress: string;
   constructor(opts: {
     rpcUrl: string;
@@ -129,6 +157,10 @@ export class RpcLegacySender {
      */
     keyHex: string;
     fetchImpl?: typeof fetch;
+    /** H2.2: receipt-poll budget (tests inject a no-op `sleep`). */
+    receiptPoll?: ReceiptPollOpts;
+    /** Injectable sleep (tests pass a no-op so backoff never stalls the suite). */
+    sleep?: (ms: number) => Promise<void>;
   }) {
     if (opts.expectedChainId === MAINNET_CHAIN_ID) {
       throw new Error("refusing mainnet (chain id 1): the mainnet path needs its own written sign-off (OBS-86)");
@@ -142,6 +174,8 @@ export class RpcLegacySender {
     this.rpc = new JsonRpc(opts.rpcUrl, opts.fetchImpl);
     this.keyBytes = hexToBytes(opts.keyHex);
     this.expectedChainId = opts.expectedChainId;
+    this.receiptPoll = { ...DEFAULT_RECEIPT_POLL, ...opts.receiptPoll };
+    this.sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
     this.pub65 = secpGetPublicKey(this.keyBytes, false); // uncompressed 65B (04 || x || y)
     const derived = "0x" + Buffer.from(keccak_256(this.pub65.subarray(1))).slice(-20).toString("hex");
     if (derived.toLowerCase() !== opts.eoaAddress.toLowerCase()) {
@@ -150,8 +184,22 @@ export class RpcLegacySender {
     this.eoaAddress = opts.eoaAddress;
   }
 
-  /** Sign + broadcast one tx to `to` with calldata `data`. Returns the tx hash. */
+  /**
+   * Sign + broadcast one tx to `to` with calldata `data`, then wait for a
+   * receipt with `status == 1`. Send calls are serialized (H2.1). Returns the
+   * confirmed tx hash. Throws `BroadcastUncertainError` when the tx may have
+   * been broadcast but its fate is unknown; throws a plain `Error` for a
+   * definite no-effect failure (pre-broadcast fault, or a mined revert).
+   */
   async send(to: string, data: string): Promise<string> {
+    const run = this.sendQueue.then(() => this.sendSerialized(to, data));
+    // Keep the chain alive even if this send rejects, so one failure cannot
+    // wedge every subsequent send.
+    this.sendQueue = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  private async sendSerialized(to: string, data: string): Promise<string> {
     const chainId = Number(await this.rpc.call<string>("eth_chainId", []));
     if (chainId !== this.expectedChainId) {
       throw new Error(`chain id mismatch: connected ${chainId}, configured ${this.expectedChainId}`);
@@ -159,29 +207,77 @@ export class RpcLegacySender {
     if (this.nonce === null) {
       this.nonce = BigInt(await this.rpc.call<string>("eth_getTransactionCount", [this.eoaAddress, "pending"]));
     }
-    const gasPriceRaw = BigInt(await this.rpc.call<string>("eth_gasPrice", []));
-    const gasPrice = (gasPriceRaw * 150n) / 100n; // 1.5x headroom (same policy as deploy.mjs)
-    // recordBatch is a fixed cheap write; 5M is a sane hard cap that still
-    // rejects anything unexpected (deploy.mjs needed 50M for the CREATE initcode).
-    const gas = 5_000_000n;
-    const chainIdBig = BigInt(chainId);
-    const unsignedTx = rlp([this.nonce, gasPrice, gas, "", 0n, data, chainIdBig, 0n, 0n]);
-    const msgHash = keccak_256(unsignedTx);
-    const sig = secpSign(msgHash, this.keyBytes); // RFC6979 deterministic-k, low-s normalized
-    if (!secpVerify(sig, msgHash, this.pub65)) {
-      throw new Error("signature self-verification failed");
+    const nonce = this.nonce;
+    // Reserve the nonce inside the serialized section so no concurrent/queued
+    // send can reuse it.
+    this.nonce = nonce + 1n;
+    let rawTx: string;
+    try {
+      const gasPriceRaw = BigInt(await this.rpc.call<string>("eth_gasPrice", []));
+      const gasPrice = (gasPriceRaw * 150n) / 100n; // 1.5x headroom (same policy as deploy.mjs)
+      // recordBatch is a fixed cheap write; 5M is a sane hard cap that still
+      // rejects anything unexpected (deploy.mjs needed 50M for the CREATE initcode).
+      const gas = 5_000_000n;
+      const chainIdBig = BigInt(chainId);
+      const unsignedTx = rlp([nonce, gasPrice, gas, "", 0n, data, chainIdBig, 0n, 0n]);
+      const msgHash = keccak_256(unsignedTx);
+      const sig = secpSign(msgHash, this.keyBytes); // RFC6979 deterministic-k, low-s normalized
+      if (!secpVerify(sig, msgHash, this.pub65)) {
+        throw new Error("signature self-verification failed");
+      }
+      const v = BigInt(sig.recovery) + 27n + chainIdBig * 2n + 8n; // EIP-155
+      rawTx = bytesToHex(rlp([nonce, gasPrice, gas, "", 0n, data, v, sig.r, sig.s]));
+    } catch (e) {
+      // Definite pre-broadcast failure: nothing reached the mempool. Give the
+      // reserved nonce back so a retry uses it (no stuck nonce gap).
+      this.nonce = nonce;
+      throw e;
     }
-    const v = BigInt(sig.recovery) + 27n + chainIdBig * 2n + 8n; // EIP-155
-    const rawTx = bytesToHex(rlp([this.nonce, gasPrice, gas, "", 0n, data, v, sig.r, sig.s]));
-    const txHash = await this.rpc.call<string>("eth_sendRawTransaction", [rawTx]);
+    let txHash: string;
+    try {
+      txHash = await this.rpc.call<string>("eth_sendRawTransaction", [rawTx]);
+    } catch (e) {
+      // The submit call itself failed — the tx may still be in the mempool
+      // (timeout / dropped response). Never treat this as "not committed".
+      throw new BroadcastUncertainError(
+        `eth_sendRawTransaction failed after a broadcast attempt (tx may be in the mempool): ${(e as Error).message}`,
+      );
+    }
     if (txHash !== bytesToHex(keccak_256(hexToBytes(rawTx)))) {
-      throw new Error("tx hash mismatch — node echoed an unexpected hash");
+      throw new BroadcastUncertainError("tx hash mismatch — node echoed an unexpected hash");
     }
-    this.nonce = (this.nonce ?? 0n) + 1n;
+    await this.awaitReceipt(txHash);
     return txHash;
   }
 
+  /** H2.2: poll for a receipt; resolve on status==1, plain-throw on revert, uncertain on timeout. */
+  private async awaitReceipt(txHash: string): Promise<void> {
+    const poll = this.receiptPoll;
+    for (let attempt = 0; attempt < Math.max(1, poll.attempts); attempt++) {
+      if (attempt > 0) {
+        const delay = Math.min(poll.initialDelayMs * Math.pow(poll.backoffFactor, attempt - 1), poll.maxDelayMs);
+        await this.sleep(delay);
+      }
+      let receipt: { status?: string } | null;
+      try {
+        receipt = await this.rpc.call<{ status?: string } | null>("eth_getTransactionReceipt", [txHash]);
+      } catch (e) {
+        throw new BroadcastUncertainError(`receipt lookup failed for ${txHash} (tx state unknown): ${(e as Error).message}`);
+      }
+      if (receipt === null || receipt === undefined) continue; // not yet included
+      if (receipt.status !== "0x1") {
+        // Mined but reverted: recordBatch was rejected (paused / not relayer /
+        // out-of-gas) — a definite no-effect failure, safe to release the claim.
+        throw new Error(`recordBatch reverted (receipt status ${receipt.status ?? "unknown"}) for tx ${txHash}`);
+      }
+      return;
+    }
+    throw new BroadcastUncertainError(`no receipt for ${txHash} after ${poll.attempts} attempts (inclusion unknown)`);
+  }
+
   private readonly expectedChainId: number;
+  private readonly receiptPoll: Required<ReceiptPollOpts>;
+  private readonly sleep: (ms: number) => Promise<void>;
 }
 
 /**

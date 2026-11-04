@@ -21,7 +21,7 @@
 # tree). Fly's app-config reference documents this as the working-directory
 # argument (`[build] dockerfile` alone does not change the context).
 #   fly launch --config relayer/fly.toml --no-deploy   # or equivalent import
-#   fly secrets set RELAYER_ALERT_WEBHOOK=… RELAYER_EOA_SECRET_KEY=…  (secret store)
+#   fly secrets set RELAYER_ALERT_WEBHOOK=… RELAYER_EOA_SECRET_KEY=… RELAYER_PUBLISH_SECRET=…  (secret store)
 #   fly deploy relayer
 # Env values not marked secret are injected via platform env; secrets via the
 # platform secret store — NEVER via fly.toml (this file is public).
@@ -41,6 +41,11 @@ primary_region = "iad"            # placeholder — set at provisioning
   RELAYER_PORT = "8081"
   RELAYER_REQUIRE_TLS = "1"
   RELAYER_RATE_PER_MIN = "60"
+  # M1/OBS-760: trusted edge client-IP header for rate shaping (Fly sets this).
+  RELAYER_CLIENT_IP_HEADER = "fly-client-ip"
+  # H1/OBS-760: operator auth on /v1/publish. The SECRET itself is injected via
+  # the platform secret store (RELAYER_PUBLISH_SECRET), never this public file.
+  # The durable production profile refuses to start without it.
   RELAYER_DB_PATH = "/data/mydaywas-relayer.db"
   RELAYER_SUBMITTER = "dry-run"   # real cutover is CISO-gated (OBS-166/OBS-237)
   # OBS-628/OBS-549: the browser CORS allow-list that actually turns the

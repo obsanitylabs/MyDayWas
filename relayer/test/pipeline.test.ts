@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { LocalDevCustody } from "../src/keycustody.ts";
-import { DryRunSubmitter, encodeRecordBatch, type ChainSubmitter, type RecordBatch } from "../src/chain.ts";
+import { DryRunSubmitter, BroadcastUncertainError, encodeRecordBatch, type ChainSubmitter, type RecordBatch } from "../src/chain.ts";
 import { AlreadyPublished, K_THRESHOLD, PublicationPipeline, canonical, publishableAt } from "../src/pipeline.ts";
 import { SignalStore, MAX_NEW_ACCOUNTS_PER_UTC_DAY } from "../src/store.ts";
 import { MS_PER_DAY, parseSubmission, RejectedSubmission, SENTIMENTS, type Sentiment } from "../src/types.ts";
@@ -245,12 +245,29 @@ describe("store retention", () => {
 });
 
 describe("recordBatch ABI encoding", () => {
-  it("uses the selector pinned from the compiled contract and encodes words", () => {
+  it("uses the selector pinned from the compiled contract and the fixed-array word layout", () => {
     // keccak256("recordBatch(uint32,uint24[3],uint24)")[0:4] from solc-js
     // methodIdentifiers — see contracts/compile.mjs output.
     const data = encodeRecordBatch(DAY0, [100, 0, 0], 100);
     expect(data.slice(0, 10)).toBe("0x0f4d576c");
-    expect(data.length).toBe(2 + 8 + 64 * 7); // "0x" + selector hex + 7 × 32-byte ABI words (2 hex chars/byte)
+    // C1 (OBS-760): uint24[3] is a FIXED array -> 5 static head words
+    // (dayId, d0, d1, d2, contributors), NOT the 7-word dynamic-array tail.
+    expect(data.length).toBe(2 + 8 + 64 * 5);
+    const word = (i: number) => data.slice(10 + i * 64, 10 + (i + 1) * 64);
+    expect(word(0)).toBe(DAY0.toString(16).padStart(64, "0")); // dayId
+    expect(word(1)).toBe("0000000000000000000000000000000000000000000000000000000000000064"); // d0 = 100
+    expect(word(2)).toBe("0".repeat(64)); // d1
+    expect(word(3)).toBe("0".repeat(64)); // d2
+    expect(word(4)).toBe("0000000000000000000000000000000000000000000000000000000000000064"); // contributors = 100
+  });
+
+  it("bounds uint24 fields at 0xffffff and rejects wider values (L4)", () => {
+    expect(() => encodeRecordBatch(DAY0, [0x1_00_0000, 0, 0], 0)).toThrow(/out of range/);
+    expect(() => encodeRecordBatch(DAY0, [0, 0, 0], 0x1_00_0000)).toThrow(/out of range/);
+    expect(() => encodeRecordBatch(DAY0, [-1, 0, 0], 0)).toThrow(/out of range/);
+    expect(encodeRecordBatch(DAY0, [0xff_ffff, 0xff_ffff, 0xff_ffff], 0xff_ffff).length).toBe(2 + 8 + 64 * 5);
+    // dayId stays a uint32 (up to 0xffffffff)
+    expect(encodeRecordBatch(0xff_ffff_ff, [0, 0, 0], 0).length).toBe(2 + 8 + 64 * 5);
   });
 });
 
@@ -378,6 +395,25 @@ describe("publish idempotency (F2)", () => {
     const artifact = await pipeline.publishDay(DAY0, publishMs); // retry after recovery
     expect(await pipeline.verifyArtifact(artifact)).toBe(true);
     expect(submitter.submitted.length).toBe(1);
+  });
+
+  it("OBS-760 H2.3: post-broadcast uncertainty KEEPS the claim (no double-commit retry)", async () => {
+    const { store, custody } = newStore();
+    await addContributors(store, DAY0, "POSITIVE", K_THRESHOLD);
+    let calls = 0;
+    const submitter: ChainSubmitter = {
+      name: "uncertain-test-submitter",
+      async submitRecordBatch(): Promise<RecordBatch> {
+        calls++;
+        throw new BroadcastUncertainError("tx may be in the mempool (inclusion unknown)");
+      },
+    };
+    const pipeline = new PublicationPipeline(store, custody, submitter);
+    await expect(pipeline.publishDay(DAY0, publishMs)).rejects.toBeInstanceOf(BroadcastUncertainError);
+    // The claim was NOT released: a retry is rejected before touching the chain,
+    // so an add-only double-commit is impossible.
+    await expect(pipeline.publishDay(DAY0, publishMs)).rejects.toThrow(AlreadyPublished);
+    expect(calls).toBe(1);
   });
 
   it("D2 regression (OBS-364) 1: below-k publish does not burn the day's claim; k reached then commits the day exactly once", async () => {

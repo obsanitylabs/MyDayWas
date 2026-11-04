@@ -16,7 +16,7 @@ import { createSignalServer, custodyProfileError } from "../src/server.ts";
 import { PublicationPipeline, type ReconciliationArtifact } from "../src/pipeline.ts";
 import { SignalStore } from "../src/store.ts";
 import { MemoryPublicationLedger } from "../src/ledger.ts";
-import { DryRunSubmitter } from "../src/chain.ts";
+import { DryRunSubmitter, BroadcastUncertainError } from "../src/chain.ts";
 import { GET_COUNTS_SELECTOR, RECORD_BATCH_SELECTOR, RpcCountsReader, RpcLegacySender, MAINNET_CHAIN_ID, verifyPinnedSelectors } from "../src/chainrpc.ts";
 import { MS_PER_DAY, SENTIMENTS, type SignalSubmission } from "../src/types.ts";
 
@@ -262,6 +262,56 @@ describe("OBS-363 R-5: reconciliation tolerates tx inclusion latency", () => {
   });
 });
 
+// ---- OBS-760 H2.4/M3: absent-past-horizon -> publication_missing -------------
+
+describe("OBS-760 H2.4/M3: a still-null day escalates to publication_missing after the horizon", () => {
+  const fastOpts = { poll: { attempts: 1, initialDelayMs: 1 }, sleep: async () => {} } as const;
+
+  it("first still-null check is pending (no alert); past the horizon it escalates to missing + a distinct alert", async () => {
+    const { artifact, custody } = await buildArtifact();
+    const sinkAlerts: Alert[] = [];
+    const alerts = new Alerts((a) => sinkAlerts.push(a));
+    const t0 = 1_700_000_000_000;
+    const monitor = new ReconciliationMonitor(custody, alerts, {
+      recorded: async () => null, // tx never included
+      missingAfterMs: 30 * 60_000,
+      ...fastOpts,
+    });
+    // First observation: inclusion latency — pending, and NOT a mismatch.
+    await expect(monitor.check(artifact, t0)).resolves.toEqual({ status: "pending" });
+    expect(sinkAlerts.filter((a) => a.reason === "publication_missing")).toHaveLength(0);
+    expect(sinkAlerts.filter((a) => a.reason === "reconciliation_mismatch")).toHaveLength(0);
+
+    // Past the horizon: distinct publication_missing alert, verdict `missing`.
+    await expect(monitor.check(artifact, t0 + 30 * 60_000)).resolves.toEqual({ status: "missing" });
+    const missing = sinkAlerts.filter((a) => a.reason === "publication_missing");
+    expect(missing).toHaveLength(1);
+    expect(sinkAlerts.filter((a) => a.reason === "reconciliation_mismatch")).toHaveLength(0);
+
+    // Deduped per day — a further check does not raise again.
+    await expect(monitor.check(artifact, t0 + 60 * 60_000)).resolves.toEqual({ status: "missing" });
+    expect(sinkAlerts.filter((a) => a.reason === "publication_missing")).toHaveLength(1);
+  });
+
+  it("a read that eventually lands clears the pending tracking (no false publication_missing)", async () => {
+    const { artifact, custody } = await buildArtifact();
+    const sinkAlerts: Alert[] = [];
+    const alerts = new Alerts((a) => sinkAlerts.push(a));
+    const rb = artifact.chain.recordBatch!;
+    const t0 = 1_700_000_000_000;
+    let landed = false;
+    const monitor = new ReconciliationMonitor(custody, alerts, {
+      recorded: async (dayId) => (landed ? { dayId, deltas: rb.deltas } : null),
+      missingAfterMs: 30 * 60_000,
+      ...fastOpts,
+    });
+    await expect(monitor.check(artifact, t0)).resolves.toEqual({ status: "pending" });
+    landed = true;
+    await expect(monitor.check(artifact, t0 + 60 * 60_000)).resolves.toEqual({ status: "ok" });
+    expect(sinkAlerts.filter((a) => a.reason === "publication_missing")).toHaveLength(0);
+  });
+});
+
 // ---- OBS-363 D1: malformed/oversized bodies reject-and-alert (no 500) --------
 
 describe("OBS-363 D1: malformed and oversized bodies", () => {
@@ -442,6 +492,7 @@ describe("OBS-313 D1: chain wiring (real submitter selectable, mainnet refused)"
           case "eth_chainId": return "0xaa36a7"; // 11155111 Sepolia
           case "eth_gasPrice": return "0x77359400"; // 2 gwei
           case "eth_getTransactionCount": return "0x0";
+          case "eth_getTransactionReceipt": return { status: "0x1" }; // H2.2: included, success
           case "eth_sendRawTransaction": {
             const raw = String(body.params[0]);
             sent.push(raw);
@@ -452,7 +503,7 @@ describe("OBS-313 D1: chain wiring (real submitter selectable, mainnet refused)"
       })();
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }), { headers: { "content-type": "application/json" } });
     };
-    const sender = new RpcLegacySender({ rpcUrl: "https://rpc.test", expectedChainId: 11155111, eoaAddress: eoa, keyHex: bytesToHex(keyBytes), fetchImpl: fakeFetch });
+    const sender = new RpcLegacySender({ rpcUrl: "https://rpc.test", expectedChainId: 11155111, eoaAddress: eoa, keyHex: bytesToHex(keyBytes), fetchImpl: fakeFetch, sleep: async () => {} });
     const data = "0x" + RECORD_BATCH_SELECTOR.replace(/^0x/, "") + "0".repeat(64 * 5);
     const txHash = await sender.send("0xEdeAC98".padEnd(42, "0"), data);
     expect(txHash).toMatch(/^0x[0-9a-f]{64}$/);
@@ -495,3 +546,118 @@ describe("OBS-313 D1: chain wiring (real submitter selectable, mainnet refused)"
 });
 
 void MS_PER_DAY;
+
+// ---- OBS-760 H2: real submitter send semantics ------------------------------
+
+describe("OBS-760 H2: RpcLegacySender serialized sends + receipt confirmation", () => {
+  const keyBytes = randomBytes(32);
+  const pub65 = secpGetPublicKey(keyBytes, false);
+  const eoa = "0x" + Buffer.from(keccak_256(pub65.subarray(1))).slice(-20).toString("hex");
+  const data = "0x" + RECORD_BATCH_SELECTOR.replace(/^0x/, "") + "0".repeat(64 * 5);
+
+  function rpcFetch(handler: (method: string, params: unknown[]) => unknown): typeof fetch {
+    return async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { id: number; method: string; params: unknown[] };
+      const result = handler(body.method, body.params);
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }), {
+        headers: { "content-type": "application/json" },
+      });
+    };
+  }
+
+  function sender(
+    handler: (method: string, params: unknown[]) => unknown,
+    extra: { receiptPoll?: { attempts?: number; initialDelayMs?: number } } = {},
+  ): RpcLegacySender {
+    return new RpcLegacySender({
+      rpcUrl: "https://rpc.test",
+      expectedChainId: 11155111,
+      eoaAddress: eoa,
+      keyHex: bytesToHex(keyBytes),
+      fetchImpl: rpcFetch(handler),
+      sleep: async () => {},
+      ...extra,
+    });
+  }
+
+  it("H2.2: waits for a status==1 receipt; a reverted tx (status 0x0) is a definite (non-uncertain) error", async () => {
+    let receiptReads = 0;
+    const s = sender((method, params) => {
+      if (method === "eth_chainId") return "0xaa36a7";
+      if (method === "eth_gasPrice") return "0x77359400";
+      if (method === "eth_getTransactionCount") return "0x0";
+      if (method === "eth_getTransactionReceipt") {
+        receiptReads++;
+        return { status: "0x0" }; // mined but reverted
+      }
+      if (method === "eth_sendRawTransaction") return bytesToHex(keccak_256(hexToBytes(String(params[0]))));
+      throw new Error(`unexpected rpc ${method}`);
+    });
+    let caught: unknown;
+    try {
+      await s.send("0xEdeAC98".padEnd(42, "0"), data);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/reverted/);
+    expect(caught).not.toBeInstanceOf(BroadcastUncertainError); // definite no-effect -> claim released
+    expect(receiptReads).toBeGreaterThan(0);
+  });
+
+  it("H2.2: an unknown inclusion state (receipt never arrives) is BroadcastUncertainError", async () => {
+    const s = sender(
+      (method, params) => {
+        if (method === "eth_chainId") return "0xaa36a7";
+        if (method === "eth_gasPrice") return "0x77359400";
+        if (method === "eth_getTransactionCount") return "0x0";
+        if (method === "eth_getTransactionReceipt") return null; // never included
+        if (method === "eth_sendRawTransaction") return bytesToHex(keccak_256(hexToBytes(String(params[0]))));
+        throw new Error(`unexpected rpc ${method}`);
+      },
+      { receiptPoll: { attempts: 2, initialDelayMs: 1 } },
+    );
+    await expect(s.send("0xEdeAC98".padEnd(42, "0"), data)).rejects.toBeInstanceOf(BroadcastUncertainError);
+  });
+
+  it("H2.2: eth_sendRawTransaction failing after the call is BroadcastUncertainError (tx may be in the mempool)", async () => {
+    const s = sender((method) => {
+      if (method === "eth_chainId") return "0xaa36a7";
+      if (method === "eth_gasPrice") return "0x77359400";
+      if (method === "eth_getTransactionCount") return "0x0";
+      if (method === "eth_sendRawTransaction") throw new Error("connection reset");
+      throw new Error(`unexpected rpc ${method}`);
+    });
+    await expect(s.send("0xEdeAC98".padEnd(42, "0"), data)).rejects.toBeInstanceOf(BroadcastUncertainError);
+  });
+
+  it("H2.1: concurrent sends are serialized and never reuse a nonce (distinct raw txs, one nonce fetch)", async () => {
+    const raws: string[] = [];
+    let nonceFetches = 0;
+    const s = sender((method, params) => {
+      if (method === "eth_chainId") return "0xaa36a7";
+      if (method === "eth_gasPrice") return "0x77359400";
+      if (method === "eth_getTransactionCount") {
+        nonceFetches++;
+        return "0x0";
+      }
+      if (method === "eth_getTransactionReceipt") return { status: "0x1" };
+      if (method === "eth_sendRawTransaction") {
+        raws.push(String(params[0]));
+        return bytesToHex(keccak_256(hexToBytes(String(params[0]))));
+      }
+      throw new Error(`unexpected rpc ${method}`);
+    });
+    const [a, b] = await Promise.all([
+      s.send("0xEdeAC98".padEnd(42, "0"), data),
+      s.send("0xEdeAC98".padEnd(42, "0"), data),
+    ]);
+    expect(a).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(b).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(nonceFetches).toBe(1);
+    expect(raws).toHaveLength(2);
+    // Identical to/data/gasPrice + deterministic signing: equal nonces would
+    // produce byte-identical raw txs. Distinctness proves the nonce advanced.
+    expect(raws[0]).not.toBe(raws[1]);
+  });
+});

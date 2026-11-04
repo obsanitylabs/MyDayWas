@@ -28,7 +28,9 @@ export type AlertReason =
   | "custody_usage_anomaly"
   | "sybil_early_warning"
   | "rate_limited"
-  | "reconciliation_mismatch";
+  | "reconciliation_mismatch"
+  /** M3/H2.4: a submitted day's on-chain counts are still absent after the horizon — a dropped/reverted publish, distinct from inclusion latency. */
+  | "publication_missing";
 
 export interface Alert {
   reason: AlertReason;
@@ -38,11 +40,22 @@ export interface Alert {
   detail: string;
 }
 
+/** M2 (OBS-760): default cap on the in-process alert ring buffer. */
+export const DEFAULT_ALERT_CAPACITY = 1_000;
+
 export class Alerts {
-  private readonly raised: Alert[] = [];
+  // M2 (OBS-760): a bounded RING BUFFER, not an unbounded array. The H1
+  // unauthenticated-flood path can raise an alert per request; an unbounded
+  // `raised` array was an OOM vector. `list()` still returns oldest→newest.
+  private readonly buffer: Alert[];
+  private readonly capacity: number;
+  private head = 0;
+  private size = 0;
   private readonly sink: (a: Alert) => void;
-  constructor(sink: (a: Alert) => void = () => {}) {
+  constructor(sink: (a: Alert) => void = () => {}, capacity = DEFAULT_ALERT_CAPACITY) {
     this.sink = sink;
+    this.capacity = Math.max(1, capacity);
+    this.buffer = new Array<Alert>(this.capacity);
   }
 
   raise(reason: AlertReason, detail: string, nowMs: number): void {
@@ -51,12 +64,21 @@ export class Alerts {
       raisedDay: Math.floor(nowMs / 86_400_000),
       detail,
     };
-    this.raised.push(alert);
+    if (this.size < this.capacity) {
+      this.buffer[(this.head + this.size) % this.capacity] = alert;
+      this.size++;
+    } else {
+      // Full: overwrite the oldest slot and advance the head (O(1)).
+      this.buffer[this.head] = alert;
+      this.head = (this.head + 1) % this.capacity;
+    }
     this.sink(alert);
   }
 
   list(): readonly Alert[] {
-    return this.raised;
+    const out: Alert[] = [];
+    for (let i = 0; i < this.size; i++) out.push(this.buffer[(this.head + i) % this.capacity]!);
+    return out;
   }
 }
 

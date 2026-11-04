@@ -67,20 +67,37 @@ export interface ReconciliationMonitorOpts {
   };
   /** Injectable sleep (tests pass a no-op so backoff never stalls the suite). */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * H2.4/M3 (OBS-760): horizon after which a day whose on-chain counts are
+   * STILL absent (budget exhausted, no reader failure) escalates from the
+   * latency-tolerant `pending` verdict to a distinct `publication_missing`
+   * alert. Measured from the first observation of the day as still-null, so a
+   * transient inclusion delay never alarms but a permanently dropped/reverted
+   * publish does. Defaults to 30 minutes.
+   */
+  missingAfterMs?: number;
 }
 
 /** R-5: the outcome of one reconciliation check — `pending` is never a mismatch. */
 export type ReconciliationVerdict =
   | { status: "ok" }
   | { status: "mismatch" }
-  | { status: "pending" };
+  | { status: "pending" }
+  /** M3/H2.4: still-null on-chain counts past the horizon — a dropped/reverted publish. */
+  | { status: "missing" };
 
 const DEFAULT_POLL = { attempts: 8, initialDelayMs: 250, backoffFactor: 2, maxDelayMs: 4_000 } as const;
+/** H2.4: default horizon before a still-null day escalates to `publication_missing`. */
+const DEFAULT_MISSING_AFTER_MS = 30 * 60_000;
 
 export class ReconciliationMonitor {
   private readonly custody: KeyCustody;
   private readonly alerts: Alerts;
   private readonly opts: ReconciliationMonitorOpts;
+  /** H2.4/M3: first time each day was observed still-null (day resolution). */
+  private readonly firstNullAt = new Map<number, number>();
+  /** H2.4: days already escalated to publication_missing (raise once per day). */
+  private readonly missingRaised = new Set<number>();
   // OBS-363 D5: plain fields assigned in the constructor body — parameter
   // properties are rejected by Node's strip-only TypeScript mode and crash
   // the documented `node src/server.ts` launch path.
@@ -100,7 +117,9 @@ export class ReconciliationMonitor {
    * every check passes, `mismatch` when a check failed (each failure raised
    * `reconciliation_mismatch`, day resolution only), `pending` (R-5) when the
    * signature + internal diff passed but the on-chain state was still
-   * pre-inclusion when the polling budget ran out (no alert raised).
+   * pre-inclusion when the polling budget ran out (no alert raised), or
+   * `missing` (H2.4/M3) when the day has stayed absent past the configured
+   * horizon (a `publication_missing` alert was raised).
    */
   async check(artifact: ReconciliationArtifact, nowMs: number = Date.now()): Promise<ReconciliationVerdict> {
     let ok = true;
@@ -172,8 +191,25 @@ export class ReconciliationMonitor {
         fail("on-chain counts unreadable while checking a submitted day (reader failure)");
       } else if (onChain === null) {
         // Budget exhausted without a read: tx still unmined/reorged — PENDING,
-        // never a mismatch (R-5). Day resolution only; no payload data.
-        log("monitor", "reconciliation pending: tx not yet included after the polling budget", artifact.generatedForDay);
+        // never a mismatch (R-5). H2.4/M3: if the day stays absent past the
+        // horizon, escalate to a distinct publication_missing alert (a dropped/
+        // reverted publish is otherwise indistinguishable from latency).
+        const day = artifact.generatedForDay;
+        const firstNull = this.firstNullAt.get(day) ?? nowMs;
+        this.firstNullAt.set(day, firstNull);
+        const horizon = this.opts.missingAfterMs ?? DEFAULT_MISSING_AFTER_MS;
+        if (nowMs - firstNull >= horizon) {
+          if (!this.missingRaised.has(day)) {
+            this.missingRaised.add(day);
+            this.alerts.raise(
+              "publication_missing",
+              "submitted day has no on-chain counts after the reconciliation horizon (dropped or reverted publish)",
+              nowMs,
+            );
+          }
+          return ok ? { status: "missing" } : { status: "mismatch" };
+        }
+        log("monitor", "reconciliation pending: tx not yet included after the polling budget", day);
         return ok ? { status: "pending" } : { status: "mismatch" };
       } else if (
         onChain.dayId !== rb.dayId ||
@@ -183,6 +219,10 @@ export class ReconciliationMonitor {
       ) {
         // Genuine on-chain disagreement with the signed recordBatch.
         fail("on-chain BatchRecorded counts differ from the signed reconciliation recordBatch");
+      } else {
+        // A read landed for the day: clear any pending/missing tracking.
+        this.firstNullAt.delete(artifact.generatedForDay);
+        this.missingRaised.delete(artifact.generatedForDay);
       }
     }
     return ok ? { status: "ok" } : { status: "mismatch" };

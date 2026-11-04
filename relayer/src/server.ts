@@ -10,7 +10,12 @@
  *   POST /v1/publish         publish one UTC day (server-enforced T+24h,
  *                            below-k suppression, one recordBatch per day,
  *                            signed reconciliation artifact; replay-guarded —
- *                            an already-published dayId is rejected 409)
+ *                            an already-published dayId is rejected 409).
+ *                            H1 (OBS-760): operator-authenticated via the
+ *                            shared-secret header x-relayer-auth (constant-time
+ *                            compare, 401 otherwise), requires
+ *                            content-type: application/json (415 otherwise) and
+ *                            is per-IP rate shaped like /v1/signals.
  *   GET  /healthz           readiness for the production LB/uptime monitor
  *                            (OBS-264 + OBS-313 D2): DB reachable, custody
  *                            configured + keyIds present, submitter mode
@@ -21,7 +26,7 @@
  */
 
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { parseSubmission, RejectedSubmission, type SignalSubmission } from "./types.ts";
 import { SignalStore, type SignalStoreCore } from "./store.ts";
 import { Alerts, log, type Alert } from "./log.ts";
@@ -54,6 +59,22 @@ export interface RelayerConfig {
    */
   ratePerMin?: number;
   /**
+   * M1 (OBS-760): trusted client-IP header the edge sets (e.g. Fly-Client-IP).
+   * When unset, rate shaping falls back to the TRUSTED LAST hop of
+   * `x-forwarded-for` (never the attacker-controlled leftmost value), then the
+   * socket address.
+   */
+  clientIpHeader?: string;
+  /**
+   * H1 (OBS-760): operator authentication on POST /v1/publish. When set, the
+   * request MUST carry `headerName` (default `x-relayer-auth`) equal to `secret`;
+   * the comparison is constant-time and a missing/invalid value is 401. The
+   * secret is supplied by the environment only (never committed). Undefined
+   * (staging) leaves /v1/publish unauthenticated — production (the durable
+   * profile) refuses to start without it (see the CLI guard).
+   */
+  publishAuth?: { secret: string; headerName?: string };
+  /**
    * OBS-87 TLS-only edge: when true, reject any request whose
    * x-forwarded-proto is not https (TLS terminates at the LB in front of
    * this process). Staging default false.
@@ -79,8 +100,43 @@ export interface RelayerConfig {
   };
 }
 
+/** H1 (OBS-760): default request header carrying the /v1/publish operator secret. */
+export const PUBLISH_AUTH_HEADER = "x-relayer-auth";
+
 /**
- * Per-IP token bucket (OBS-87 rate shaping on /v1/signals).
+ * H1 (OBS-760): constant-time shared-secret comparison. Both inputs are
+ * SHA-256 hashed first so the compare is over fixed-length digests and cannot
+ * leak length via timing.
+ */
+export function secretMatches(provided: string, expected: string): boolean {
+  const a = createHash("sha256").update(provided, "utf8").digest();
+  const b = createHash("sha256").update(expected, "utf8").digest();
+  return timingSafeEqual(a, b);
+}
+
+/**
+ * M1 (OBS-760): resolve the client IP used for rate shaping from TRUSTED
+ * sources only. Order: the platform-set client-IP header, then the LAST hop of
+ * `x-forwarded-for` (appended by our own proxy — the leftmost value is
+ * attacker-controlled), then the socket address.
+ */
+export function clientIp(req: IncomingMessage, platformHeader?: string): string {
+  if (platformHeader) {
+    const v = req.headers[platformHeader];
+    const s = Array.isArray(v) ? v[0] : v;
+    if (typeof s === "string" && s.trim() !== "") return s.trim();
+  }
+  const xff = req.headers["x-forwarded-for"];
+  const chain = (Array.isArray(xff) ? xff.join(",") : xff ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s !== "");
+  if (chain.length > 0) return chain[chain.length - 1]!;
+  return req.socket.remoteAddress ?? "unknown";
+}
+
+/**
+ * Per-IP token bucket (OBS-87 rate shaping on /v1/signals and /v1/publish).
  *
  * OBS-245 / audit F-1: the bucket map is bounded two ways so a long-lived
  * process cannot grow it without limit when production shaping is on
@@ -89,9 +145,10 @@ export interface RelayerConfig {
  *     to full within 60s, so with idleTtlMs >= 60_000 an evicted entry is
  *     semantically identical to a fresh one (tokens clamp at perMin).
  *     Sweeps are amortized (at most one per idleTtlMs window).
- *   - Cap eviction: if size would exceed maxBuckets, the idlest entry
- *     (smallest lastMs) is evicted first — bounds memory absolutely even
- *     under sub-TTL key churn.
+ *   - Cap eviction: if size would exceed maxBuckets, the least-recently-used
+ *     entry is evicted in O(1) (M1/OBS-760: a Map keeps insertion order and
+ *     every touch re-inserts at the tail, so the head key is the LRU entry;
+ *     this replaces the old O(n) idlest-entry scan).
  */
 export class RateShaper {
   private readonly buckets = new Map<string, { tokens: number; lastMs: number }>();
@@ -125,20 +182,18 @@ export class RateShaper {
     let b = this.buckets.get(ip);
     if (!b) {
       if (this.buckets.size >= this.maxBuckets) {
-        let idlestKey: string | null = null;
-        let idlestMs = Infinity;
-        for (const [key, e] of this.buckets) {
-          if (e.lastMs < idlestMs) {
-            idlestMs = e.lastMs;
-            idlestKey = key;
-          }
-        }
-        if (idlestKey !== null) this.buckets.delete(idlestKey);
+        // M1: O(1) LRU eviction — the head of the Map is the least-recently-used
+        // key (every touch re-inserts the key at the tail below).
+        const lruKey = this.buckets.keys().next().value;
+        if (lruKey !== undefined) this.buckets.delete(lruKey);
       }
       b = { tokens: this.perMin, lastMs: nowMs };
+    } else {
+      // Move the key to the most-recently-used position and refill it.
+      this.buckets.delete(ip);
+      b.tokens = Math.min(this.perMin, b.tokens + (nowMs - b.lastMs) * refillPerMs);
+      b.lastMs = nowMs;
     }
-    b.tokens = Math.min(this.perMin, b.tokens + (nowMs - b.lastMs) * refillPerMs);
-    b.lastMs = nowMs;
     const ok = b.tokens >= 1;
     if (ok) b.tokens -= 1;
     this.buckets.set(ip, b);
@@ -274,7 +329,9 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
         res.writeHead(204, {
           ...corsHeaders(),
           "access-control-allow-methods": "POST, OPTIONS",
-          "access-control-allow-headers": "content-type",
+          // H1: /v1/publish also accepts the operator auth header.
+          "access-control-allow-headers":
+            req.url === "/v1/publish" ? `content-type, ${PUBLISH_AUTH_HEADER}` : "content-type",
           "access-control-max-age": "600",
         });
         res.end();
@@ -290,11 +347,9 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
       try {
         if (req.url === "/v1/signals") {
           if (shaper) {
-            const ip =
-              req.headers["x-forwarded-for"]?.toString().split(",")[0]?.trim() ??
-              req.socket.remoteAddress ??
-              "unknown";
-            if (!shaper.allow(ip, Date.now())) {
+            // M1: trusted client IP; per-route bucket key.
+            const ip = clientIp(req, cfg.clientIpHeader);
+            if (!shaper.allow(`signals|${ip}`, Date.now())) {
               alerts.raise("rate_limited", "per-IP rate shaping on /v1/signals rejected a request", Date.now());
               return respond(429, { error: "rate_limited" });
             }
@@ -341,7 +396,34 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
           log("ingest", "signal accepted", submission.dayId);
           return respond(202, { ok: true });
         }
-        // POST /v1/publish { "dayId": N }
+        // POST /v1/publish { "dayId": N } — operator-authenticated (H1/OBS-760).
+        // Rate shape first (protects the constant-time compare from brute force),
+        // then require the shared secret, then require JSON content-type.
+        if (shaper) {
+          const ip = clientIp(req, cfg.clientIpHeader);
+          if (!shaper.allow(`publish|${ip}`, Date.now())) {
+            alerts.raise("rate_limited", "per-IP rate shaping on /v1/publish rejected a request", Date.now());
+            return respond(429, { error: "rate_limited" });
+          }
+        }
+        if (cfg.publishAuth) {
+          const headerName = cfg.publishAuth.headerName ?? PUBLISH_AUTH_HEADER;
+          const raw = req.headers[headerName];
+          const provided = Array.isArray(raw) ? raw.join(",") : raw;
+          if (typeof provided !== "string" || !secretMatches(provided, cfg.publishAuth.secret)) {
+            // No alert (an unauthenticated flood must not fill the alert path);
+            // a hygiene-safe line only.
+            log("server", "publish request rejected: missing/invalid operator auth");
+            return respond(401, { error: "unauthorized" });
+          }
+        }
+        {
+          const rawCt = req.headers["content-type"];
+          const ct = Array.isArray(rawCt) ? rawCt.join(",") : rawCt ?? "";
+          if (!/\bapplication\/json\b/i.test(ct)) {
+            return respond(415, { error: "unsupported_media_type" });
+          }
+        }
         const read = await readJsonGuarded(req);
         if (!read.ok) {
           // D1: same reject-and-alert contract on the publish path.
@@ -454,6 +536,13 @@ if (process.argv[1] && process.argv[1].endsWith("server.ts")) {
     console.error(`[relayer:custody] refusing to start: ${profileError}`);
     process.exit(1);
   }
+  // H1 (OBS-760): the durable production profile must authenticate /v1/publish.
+  // The secret is supplied by the environment only (never committed); a
+  // production process without it would expose the one-shot publish claim.
+  if (dbPath && !process.env.RELAYER_PUBLISH_SECRET) {
+    console.error("refusing to start: production profile (RELAYER_DB_PATH) requires RELAYER_PUBLISH_SECRET (operator auth on /v1/publish)");
+    process.exit(1);
+  }
   // ---- OBS-313 D1: custody provider (default = local dev) ------------------
   const custodyMode = process.env.RELAYER_CUSTODY ?? "local-dev";
   let innerCustody: import("./keycustody.ts").KeyCustody;
@@ -550,6 +639,12 @@ if (process.argv[1] && process.argv[1].endsWith("server.ts")) {
       ? Number(process.env.RELAYER_RATE_PER_MIN)
       : undefined,
     requireTls: process.env.RELAYER_REQUIRE_TLS === "1",
+    // M1: trusted edge client-IP header (Fly sets Fly-Client-IP; lower-cased).
+    clientIpHeader: process.env.RELAYER_CLIENT_IP_HEADER ?? "fly-client-ip",
+    // H1: operator auth on /v1/publish — secret from the environment only.
+    publishAuth: process.env.RELAYER_PUBLISH_SECRET
+      ? { secret: process.env.RELAYER_PUBLISH_SECRET, headerName: process.env.RELAYER_PUBLISH_AUTH_HEADER }
+      : undefined,
     alertSink,
     chain,
     // D2: readiness surface. Build revision is the public git sha, injected
