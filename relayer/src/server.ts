@@ -31,11 +31,11 @@ import { parseSubmission, RejectedSubmission, type SignalSubmission } from "./ty
 import { SignalStore, type SignalStoreCore } from "./store.ts";
 import { Alerts, log, type Alert } from "./log.ts";
 import { AlreadyPublished, NotYetPublishable, PublicationPipeline } from "./pipeline.ts";
-import { DryRunSubmitter, type ChainSubmitter } from "./chain.ts";
+import { BroadcastUncertainError, DryRunSubmitter, type ChainSubmitter } from "./chain.ts";
 import { MemoryPublicationLedger, type PublicationLedger } from "./ledger.ts";
 import { DurableSignalStore, SqlitePublicationLedger } from "./durable.ts";
 import type { KeyCustody } from "./keycustody.ts";
-import { ReconciliationMonitor } from "./monitor.ts";
+import { ReconciliationMonitor, type ReconciliationMonitorOpts } from "./monitor.ts";
 import { SybilEarlyWarning } from "./sybil.ts";
 
 export interface RelayerConfig {
@@ -94,10 +94,14 @@ export interface RelayerConfig {
    * OBS-235 condition 1 / OBS-313 D8: when set, every published artifact runs
    * through the reconciliation monitor (verifyReconciliation + internal diff +
    * on-chain `BatchRecorded` diff via `recorded`) wired to the alert sink.
+   *
+   * M3/OBS-775: the monitor also owns the bounded retained-publish registry and
+   * the read-only after-horizon sweep. The server starts the sweep timer ONLY
+   * when this object is present (the same guard as the per-request check), so a
+   * deployment without reconciliation has no sweep at all. `sweepIntervalMs: 0`
+   * disables the timer (tests drive `sweep()` directly).
    */
-  reconciliation?: {
-    recorded?: (dayId: number) => Promise<{ dayId: number; deltas: [number, number, number] } | null>;
-  };
+  reconciliation?: ReconciliationMonitorOpts;
 }
 
 /** H1 (OBS-760): default request header carrying the /v1/publish operator secret. */
@@ -207,6 +211,8 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
   pipeline: PublicationPipeline;
   alerts: Alerts;
   ledger: PublicationLedger;
+  /** M3/OBS-775: present only when reconciliation is configured. */
+  reconciliation?: ReconciliationMonitor;
 } {
   const alerts = new Alerts(cfg.alertSink);
   // One ledger per relayer instance (per-day + per-instance scoping, F2/F3 design).
@@ -441,7 +447,17 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
           // (signature + internal diff + on-chain BatchRecorded diff when a
           // reader is configured). Mismatch alerts ops; the artifact itself
           // is still returned (the alert is the detection path).
-          if (reconciliation) await reconciliation.check(artifact);
+          if (reconciliation) {
+            // M3/OBS-775: retain the successfully returned publish so the
+            // periodic sweep re-checks it after the inclusion horizon. A read
+            // that lands in check() (or the sweep) clears the retained entry.
+            try {
+              reconciliation.track(artifact, Date.now());
+            } catch {
+              // Retention is best-effort; it must never break a successful publish.
+            }
+            await reconciliation.check(artifact);
+          }
           return respond(200, artifact);
         } catch (e) {
           if (e instanceof NotYetPublishable) {
@@ -452,6 +468,17 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
             log("server", "publish replay rejected", dayId);
             return respond(409, { error: "already_published", dayId });
           }
+          if (e instanceof BroadcastUncertainError && reconciliation) {
+            // M3/OBS-775: the broadcast outcome is unknown. Retain the dayId so
+            // the read-only sweep can detect a permanently dropped publish and
+            // raise the distinct publication_missing alert. The request still
+            // fails exactly as before (500 internal).
+            try {
+              reconciliation.trackUncertain(dayId, Date.now());
+            } catch {
+              // Never mask the publish failure with a tracking failure.
+            }
+          }
           throw e;
         }
       } catch (e) {
@@ -460,7 +487,30 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
       }
     })();
   });
-  return { server, store, pipeline, alerts, ledger };
+  // M3/OBS-775: periodic read-only publication sweep. It exists ONLY when the
+  // reconciliation monitor is configured — the same `if (reconciliation)` guard
+  // as the per-request check. The sweep never publishes/signs/spends: it only
+  // performs the reconciliation read and raises the distinct
+  // `publication_missing` alert once per day. A timer failure can never reach
+  // the request path (the callback is fire-and-forget and fully guarded), and
+  // the interval is unref'd so it cannot keep a short-lived process alive.
+  const sweepIntervalMs = cfg.reconciliation?.sweepIntervalMs ?? 60_000;
+  let sweepTimer: ReturnType<typeof setInterval> | undefined;
+  if (reconciliation && sweepIntervalMs > 0) {
+    sweepTimer = setInterval(() => {
+      void reconciliation.sweep().catch(() => {
+        /* fail-safe: the sweep must never throw into the request path */
+      });
+    }, sweepIntervalMs);
+    sweepTimer.unref();
+    server.once("close", () => {
+      if (sweepTimer !== undefined) {
+        clearInterval(sweepTimer);
+        sweepTimer = undefined;
+      }
+    });
+  }
+  return { server, store, pipeline, alerts, ledger, ...(reconciliation ? { reconciliation } : {}) };
 }
 
 /**

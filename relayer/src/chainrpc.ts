@@ -45,6 +45,127 @@ export const MAINNET_CHAIN_ID = 1;
 /** Sepolia staging chain id (OBS-90 decision). */
 export const SEPOLIA_CHAIN_ID = 11155111;
 
+/**
+ * JSON-RPC error surfaced by a provider. Keeps the JSON-RPC `code` so the
+ * submitter can distinguish a DEFINITE pre-broadcast rejection from an
+ * ambiguous transport failure (H2/OBS-775). The message text is unchanged from
+ * the previous plain `Error` (`rpc <method>: <provider message>`) so existing
+ * callers/tests keep their formatting.
+ */
+export class JsonRpcError extends Error {
+  readonly code: number | string | undefined;
+  readonly rpcMethod: string;
+  constructor(method: string, error: { code?: unknown; message?: unknown }) {
+    const message = typeof error.message === "string" ? error.message : "unknown error";
+    super(`rpc ${method}: ${message}`);
+    this.name = "JsonRpcError";
+    this.rpcMethod = method;
+    this.code = typeof error.code === "number" || typeof error.code === "string" ? error.code : undefined;
+  }
+}
+
+/**
+ * H2/OBS-775 — DEFINITE pre-broadcast rejection classification.
+ *
+ * A DEFINITE rejection means the node refused the tx BEFORE putting it in the
+ * mempool: the reserved nonce may be returned and the day's ledger claim
+ * released (the day stays retryable). Anything not proven definite stays
+ * UNCERTAIN: the tx may be in the mempool, so the nonce and claim are kept
+ * (releasing them risks a double-commit of add-only on-chain deltas).
+ *
+ * Recognised JSON-RPC error CODES (provider-independent):
+ *   -32700  Parse error            — request body was not parseable; nothing sent.
+ *   -32600  Invalid Request        — malformed JSON-RPC request; nothing sent.
+ *   -32601  Method not found       — node has no eth_sendRawTransaction; nothing sent.
+ *   -32602  Invalid params         — params/calldata rejected before broadcast.
+ *
+ * Recognised -32000/-32001 message PATTERNS (case-insensitive substrings), the
+ * standard geth/Besu/Nethermind txpool rejections:
+ *   "nonce too low", "nonce has already been used",
+ *   "insufficient funds", "insufficient balance",
+ *   "intrinsic gas too low", "exceeds block gas limit",
+ *   "transaction underpriced", "replacement transaction underpriced",
+ *   "max fee per gas less than block base fee",
+ *   "invalid sender", "invalid signature",
+ *   "invalid chain id", "invalid chainid",
+ *   "invalid transaction", "transaction type not supported",
+ *   "unsupported transaction type", "invalid params".
+ *
+ * Deliberately treated as UNCERTAIN even when a code/message is present:
+ *   - "already known" / "known transaction" / "already in the txpool/mempool"
+ *     — the node already has the tx, so it may already have been broadcast;
+ *   - "timeout" / "timed out" / connection reset/refused/closed / socket hang
+ *     up / ECONNRESET / ECONNREFUSED / ETIMEDOUT / EHOSTUNREACH / ENETUNREACH /
+ *     EPIPE / "temporarily unavailable" / "service unavailable" / "internal
+ *     error" / "try again" / "server error";
+ *   - "nonce too high", "txpool is full", "execution reverted" and ANY error
+ *     whose code is absent or not in the definite set. Conservative by design.
+ *
+ * Network-level failures never carry a JSON-RPC code (fetch throws, non-JSON
+ * HTTP bodies) and are therefore always UNCERTAIN — we do not classify on
+ * loose network-string matching alone.
+ */
+export const DEFINITE_BROADCAST_REJECTION_CODES: readonly (number | string)[] = [
+  -32700,
+  -32600,
+  -32601,
+  -32602,
+];
+
+export const DEFINITE_BROADCAST_REJECTION_PATTERNS: readonly RegExp[] = [
+  /nonce too low/i,
+  /nonce has already been used/i,
+  /insufficient funds/i,
+  /insufficient balance/i,
+  /intrinsic gas too low/i,
+  /exceeds (?:the )?block gas limit/i,
+  /transaction underpriced/i,
+  /replacement transaction underpriced/i,
+  /max fee per gas less than block base fee/i,
+  /invalid sender/i,
+  /invalid signature/i,
+  /invalid chain ?id/i,
+  /invalid transaction/i,
+  /transaction type not supported/i,
+  /unsupported transaction type/i,
+  /invalid params/i,
+];
+
+/** Checked FIRST so an "already known" tx is never released as definite. */
+export const UNCERTAIN_BROADCAST_PATTERNS: readonly RegExp[] = [
+  /already known/i,
+  /known transaction/i,
+  /already in (?:the )?(?:tx ?pool|mempool|pool)/i,
+  /already (?:exists|imported)/i,
+  /timeout|timed out/i,
+  /connection (?:reset|refused|closed)/i,
+  /socket hang up/i,
+  /ECONNRESET|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EPIPE/i,
+  /temporarily unavailable/i,
+  /service unavailable/i,
+  /internal error/i,
+  /try again/i,
+  /server error/i,
+];
+
+/**
+ * Classify an `eth_sendRawTransaction` failure. Returns `"definite"` only when
+ * the provider's JSON-RPC code/message proves the tx was rejected before
+ * broadcast; every other case (including non-JSON-RPC errors) is `"uncertain"`.
+ */
+export function classifyBroadcastFailure(error: unknown): "definite" | "uncertain" {
+  if (!(error instanceof JsonRpcError)) return "uncertain";
+  const message = error.message.toLowerCase();
+  if (UNCERTAIN_BROADCAST_PATTERNS.some((re) => re.test(message))) return "uncertain";
+  if (error.code !== undefined && DEFINITE_BROADCAST_REJECTION_CODES.some((c) => c === error.code)) {
+    return "definite";
+  }
+  if ((error.code === -32000 || error.code === -32001) && DEFINITE_BROADCAST_REJECTION_PATTERNS.some((re) => re.test(message))) {
+    return "definite";
+  }
+  return "uncertain";
+}
+
 /** JSON-RPC client (no deps). `fetchImpl` is injectable for tests. */
 export class JsonRpc {
   private nextId = 0;
@@ -63,8 +184,11 @@ export class JsonRpc {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: this.nextId++, method, params }),
     });
-    const body = (await res.json()) as { result?: T; error?: { message: string } };
-    if (body.error) throw new Error(`rpc ${method}: ${body.error.message}`);
+    const body = (await res.json()) as {
+      result?: T;
+      error?: { code?: unknown; message?: unknown };
+    };
+    if (body.error) throw new JsonRpcError(method, body.error);
     return body.result as T;
   }
 }
@@ -237,10 +361,21 @@ export class RpcLegacySender {
     try {
       txHash = await this.rpc.call<string>("eth_sendRawTransaction", [rawTx]);
     } catch (e) {
-      // The submit call itself failed — the tx may still be in the mempool
-      // (timeout / dropped response). Never treat this as "not committed".
+      // H2/OBS-775: a DEFINITE JSON-RPC rejection (nonce too low, insufficient
+      // funds, intrinsic gas too low, invalid params, replacement underpriced,
+      // ...) proves the tx never reached the mempool. Take the same
+      // definite-pre-broadcast path as the rawTx build above: give the reserved
+      // nonce back and rethrow the plain error so the pipeline releases the
+      // ledger claim (the day stays retryable). Anything else is ambiguous —
+      // the tx may be in the mempool — so keep the nonce/claim and raise
+      // BroadcastUncertainError exactly as before.
+      if (classifyBroadcastFailure(e) === "definite") {
+        this.nonce = nonce;
+        throw e;
+      }
+      const detail = e instanceof Error ? e.message : String(e);
       throw new BroadcastUncertainError(
-        `eth_sendRawTransaction failed after a broadcast attempt (tx may be in the mempool): ${(e as Error).message}`,
+        `eth_sendRawTransaction failed after a broadcast attempt (tx may be in the mempool): ${detail}`,
       );
     }
     if (txHash !== bytesToHex(keccak_256(hexToBytes(rawTx)))) {

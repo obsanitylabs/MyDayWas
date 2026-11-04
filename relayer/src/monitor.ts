@@ -76,7 +76,35 @@ export interface ReconciliationMonitorOpts {
    * publish does. Defaults to 30 minutes.
    */
   missingAfterMs?: number;
+  /**
+   * M3/OBS-775: interval for the server-side periodic read-only sweep. This is
+   * consumed by `createSignalServer` (the monitor itself never schedules a
+   * timer so tests can drive `sweep()` directly). `0` disables the timer.
+   * Defaults to 60 seconds.
+   */
+  sweepIntervalMs?: number;
+  /**
+   * M3/OBS-775: cap on the retained-publish registry. The registry is bounded
+   * oldest-first so a long-lived process cannot grow it without limit. Defaults
+   * to 256 entries (a day is ~1 KiB, so the worst case is ~256 KiB).
+   */
+  maxRetained?: number;
 }
+
+/** M3/OBS-775: one publish retained until a successful on-chain read clears it. */
+interface RetainedPublication {
+  dayId: number;
+  /** Present for a publish that returned successfully; absent for BroadcastUncertainError. */
+  artifact?: ReconciliationArtifact;
+  /** First time this day was observed still-null (drives the inclusion horizon). */
+  firstNullAt: number;
+  /** True once the distinct publication_missing alert was raised for this day. */
+  missingRaised: boolean;
+}
+
+const DEFAULT_MAX_RETAINED = 256;
+const PUBLICATION_MISSING_DETAIL =
+  "submitted day has no on-chain counts after the reconciliation horizon (dropped or reverted publish)";
 
 /** R-5: the outcome of one reconciliation check — `pending` is never a mismatch. */
 export type ReconciliationVerdict =
@@ -94,10 +122,14 @@ export class ReconciliationMonitor {
   private readonly custody: KeyCustody;
   private readonly alerts: Alerts;
   private readonly opts: ReconciliationMonitorOpts;
-  /** H2.4/M3: first time each day was observed still-null (day resolution). */
-  private readonly firstNullAt = new Map<number, number>();
-  /** H2.4: days already escalated to publication_missing (raise once per day). */
-  private readonly missingRaised = new Set<number>();
+  /**
+   * M3/OBS-775: the bounded retained-publish registry. It replaces the two
+   * unbounded maps used by the first M3 cut (firstNullAt + missingRaised) and
+   * additionally carries the artifact needed by the periodic sweep. A later
+   * successful read deletes the entry; the oldest entry is evicted when the
+   * configured cap is exceeded.
+   */
+  private readonly retained = new Map<number, RetainedPublication>();
   // OBS-363 D5: plain fields assigned in the constructor body — parameter
   // properties are rejected by Node's strip-only TypeScript mode and crash
   // the documented `node src/server.ts` launch path.
@@ -105,6 +137,113 @@ export class ReconciliationMonitor {
     this.custody = custody;
     this.alerts = alerts;
     this.opts = opts;
+  }
+
+  /** M3/OBS-775: number of retained publishes awaiting a successful read (test/ops visibility). */
+  get retainedCount(): number {
+    return this.retained.size;
+  }
+
+  /**
+   * M3/OBS-775: retain a publish whose broadcast outcome is unknown. The dayId
+   * is enough for the sweep's read-only `recorded(dayId)` reconciliation read;
+   * no artifact exists to verify because the pipeline throws before signing.
+   * No-op when no on-chain reader is configured (dry-run has no on-chain half).
+   */
+  trackUncertain(dayId: number, nowMs: number = Date.now()): void {
+    if (!this.opts.recorded) return;
+    this.retain(dayId, undefined, nowMs);
+  }
+
+  /**
+   * M3/OBS-775: retain a publish that returned successfully so the periodic
+   * sweep re-checks it after the inclusion horizon. A read that lands (matching
+   * or mismatching) clears the entry; a day with no on-chain batch is not
+   * retained because there is nothing to wait for.
+   */
+  track(artifact: ReconciliationArtifact, nowMs: number = Date.now()): void {
+    if (!this.opts.recorded) return;
+    const rb = artifact.chain.recordBatch;
+    if (rb === null || !rb.hasPublishedCells) return;
+    this.retain(artifact.generatedForDay, artifact, nowMs);
+  }
+
+  /**
+   * M3/OBS-775: periodic, READ-ONLY sweep over retained publishes. For every
+   * day still absent past the inclusion horizon it raises the distinct
+   * `publication_missing` alert exactly once; a read that lands clears the
+   * retained record. Never signs, never submits a tx, never spends. A reader
+   * failure leaves the entry in place for the next interval and never throws.
+   * Returns the number of retained entries examined (test/ops visibility).
+   */
+  async sweep(nowMs: number = Date.now()): Promise<number> {
+    if (!this.opts.recorded) return 0;
+    const horizon = this.opts.missingAfterMs ?? DEFAULT_MISSING_AFTER_MS;
+    let examined = 0;
+    // Iterate a snapshot so a concurrent release cannot disturb the walk.
+    for (const entry of [...this.retained.values()]) {
+      examined++;
+      try {
+        const onChain = await this.opts.recorded(entry.dayId);
+        if (onChain !== null) {
+          // A read landed: the publish is not missing. Preserve the existing
+          // "later successful read clears tracking" behaviour. When the retained
+          // artifact carried a recordBatch, a non-null read that disagrees is a
+          // genuine data-integrity mismatch (same alert as the request path).
+          const rb = entry.artifact?.chain.recordBatch;
+          if (
+            rb !== undefined && rb !== null &&
+            (onChain.dayId !== rb.dayId ||
+              onChain.deltas[0] !== rb.deltas[0] ||
+              onChain.deltas[1] !== rb.deltas[1] ||
+              onChain.deltas[2] !== rb.deltas[2])
+          ) {
+            this.alerts.raise(
+              "reconciliation_mismatch",
+              "on-chain BatchRecorded counts differ from the signed reconciliation recordBatch",
+              nowMs,
+            );
+          }
+          this.release(entry.dayId);
+          continue;
+        }
+        if (nowMs - entry.firstNullAt >= horizon && !entry.missingRaised) {
+          entry.missingRaised = true;
+          this.alerts.raise("publication_missing", PUBLICATION_MISSING_DETAIL, nowMs);
+        }
+      } catch {
+        // Fail-safe: the sweep runs on a timer, never in a request path. A
+        // reader failure is not evidence of a dropped publish, so keep the
+        // entry and retry on the next interval. No alert storm.
+        log("monitor", "publication sweep read failed; will retry next interval", entry.dayId);
+      }
+    }
+    return examined;
+  }
+
+  private retain(dayId: number, artifact: ReconciliationArtifact | undefined, nowMs: number): void {
+    const existing = this.retained.get(dayId);
+    if (existing) {
+      if (artifact !== undefined) existing.artifact = artifact;
+      return;
+    }
+    const entry: RetainedPublication = { dayId, firstNullAt: nowMs, missingRaised: false };
+    if (artifact !== undefined) entry.artifact = artifact;
+    this.retained.set(dayId, entry);
+    this.evictOldest();
+  }
+
+  private release(dayId: number): void {
+    this.retained.delete(dayId);
+  }
+
+  private evictOldest(): void {
+    const max = Math.max(1, this.opts.maxRetained ?? DEFAULT_MAX_RETAINED);
+    while (this.retained.size > max) {
+      const oldest = this.retained.keys().next().value;
+      if (oldest === undefined) break;
+      this.retained.delete(oldest);
+    }
   }
 
   private async sleep(ms: number): Promise<void> {
@@ -195,17 +334,15 @@ export class ReconciliationMonitor {
         // horizon, escalate to a distinct publication_missing alert (a dropped/
         // reverted publish is otherwise indistinguishable from latency).
         const day = artifact.generatedForDay;
-        const firstNull = this.firstNullAt.get(day) ?? nowMs;
-        this.firstNullAt.set(day, firstNull);
+        const prior = this.retained.get(day);
+        const firstNull = prior?.firstNullAt ?? nowMs;
+        this.retain(day, artifact, firstNull);
+        const tracked = this.retained.get(day)!;
         const horizon = this.opts.missingAfterMs ?? DEFAULT_MISSING_AFTER_MS;
-        if (nowMs - firstNull >= horizon) {
-          if (!this.missingRaised.has(day)) {
-            this.missingRaised.add(day);
-            this.alerts.raise(
-              "publication_missing",
-              "submitted day has no on-chain counts after the reconciliation horizon (dropped or reverted publish)",
-              nowMs,
-            );
+        if (nowMs - tracked.firstNullAt >= horizon) {
+          if (!tracked.missingRaised) {
+            tracked.missingRaised = true;
+            this.alerts.raise("publication_missing", PUBLICATION_MISSING_DETAIL, nowMs);
           }
           return ok ? { status: "missing" } : { status: "mismatch" };
         }
@@ -217,12 +354,14 @@ export class ReconciliationMonitor {
         onChain.deltas[1] !== rb.deltas[1] ||
         onChain.deltas[2] !== rb.deltas[2]
       ) {
-        // Genuine on-chain disagreement with the signed recordBatch.
+        // A read landed but disagrees: this is a genuine on-chain mismatch, NOT
+        // a missing publication. Release the retained entry so the periodic
+        // sweep cannot later raise a false publication_missing for this day.
+        this.release(artifact.generatedForDay);
         fail("on-chain BatchRecorded counts differ from the signed reconciliation recordBatch");
       } else {
         // A read landed for the day: clear any pending/missing tracking.
-        this.firstNullAt.delete(artifact.generatedForDay);
-        this.missingRaised.delete(artifact.generatedForDay);
+        this.release(artifact.generatedForDay);
       }
     }
     return ok ? { status: "ok" } : { status: "mismatch" };
