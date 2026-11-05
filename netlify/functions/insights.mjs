@@ -185,9 +185,11 @@ export default async (req) => {
     // OBS-303 — pff campaign funnel C1–C3. C0 (waitlist_verified) is joined in the
     // dashboard from GET /api/waitlist/stats (OBS-203); not recomputed here.
     campaignFunnel: campaignFunnel(events),
-    // OBS-350 — mdw signals opt-in (F3) + follow-up usage (F4), metric dictionary v3.
+    // OBS-350/OBS-755 — mdw signals opt-in (F3) + follow-up usage (F4), metric
+    // dictionary v3. Key is `mdw` per the OBS-755 ruling (OBS-266 §2 definition of
+    // record); the exported function name and module file are unchanged.
     // Dormant pre-launch: no mdw events exist, so every rate is null (0 / n-a).
-    mdwFunnel: mdwFunnel(events),
+    mdw: mdwFunnel(events),
   };
 
   // OBS-303 — admin-only on-chain overlay. Served in the same token-gated response,
