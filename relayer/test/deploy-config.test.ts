@@ -49,7 +49,7 @@ import { dirname, relative, resolve } from "node:path";
 import { LocalDevCustody } from "../src/keycustody.ts";
 import { createSignalServer } from "../src/server.ts";
 
-const APP_ORIGIN = "https://app.mydaywas.com";
+const APP_ORIGIN = "https://mydaywas.com";
 const DENIED_ORIGIN = "https://not-allowed.example.com";
 
 const here = dirname(fileURLToPath(import.meta.url));

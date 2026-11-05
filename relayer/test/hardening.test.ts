@@ -138,7 +138,7 @@ describe("OBS-760 H1: /v1/publish operator authentication", () => {
     try {
       const res = await fetch(`http://127.0.0.1:${port}/v1/publish`, {
         method: "OPTIONS",
-        headers: { origin: "https://app.mydaywas.com", "x-forwarded-proto": "https" },
+        headers: { origin: "https://mydaywas.com", "x-forwarded-proto": "https" },
       });
       expect(res.status).toBe(204);
       expect(res.headers.get("access-control-allow-headers")).toContain(PUBLISH_AUTH_HEADER);

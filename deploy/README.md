@@ -49,6 +49,11 @@ Every value reaches the running relayer through one of exactly three paths:
    `https://app.mydaywas.com`; if that key is dropped from the platform config
    the browser path is CLOSED and the diary's only network call fails.
 
+   > **Correction (2026-11-05, OBS-824):** `app.mydaywas.com` was deleted by
+   > the OBS-789 consolidation (NXDOMAIN). The app origin of record is now
+   > **`https://mydaywas.com`**, and `relayer/fly.toml` sets it accordingly.
+   > The provisioned platform env value must match at provisioning time.
+
    `RELAYER_CLIENT_IP_HEADER` (M1/OBS-760) names the platform header the
    relayer reads for the **client IP** used by rate shaping (default
    `fly-client-ip`, which the Fly edge sets). When that header is absent the
@@ -193,11 +198,13 @@ allow-list is empty and the beta ships with the POST blocked:
 
 ```bash
 curl -sS -o /dev/null -D - -X OPTIONS https://relayer.mydaywas.com/v1/signals \
-  -H 'Origin: https://app.mydaywas.com' \
+  -H 'Origin: https://mydaywas.com' \
   -H 'Access-Control-Request-Method: POST' \
   -H 'Access-Control-Request-Headers: content-type'
-# expect: 204; access-control-allow-origin: https://app.mydaywas.com;
+# expect: 204; access-control-allow-origin: https://mydaywas.com;
 # vary: Origin; access-control-allow-methods contains POST; max-age 600.
+# (Updated 2026-11-05, OBS-824: previously used https://app.mydaywas.com,
+# a domain the OBS-789 consolidation deleted.)
 curl -sS -o /dev/null -D - -X OPTIONS https://relayer.mydaywas.com/v1/signals \
   -H 'Origin: https://not-allowed.example.com'
 # expect: 204 but NO access-control-allow-origin (disallowed origin is blocked).
