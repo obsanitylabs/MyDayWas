@@ -11,6 +11,12 @@ Status: consolidation branch `obs-789-consolidate` (merge of `main` backend +
 
 ## What happened to app.mydaywas.com (site `mydaywas-app`, e862bd6d)
 
+> **Follow-up (2026-11-05, OBS-824):** with the site and DNS deleted, the
+> `https://app.mydaywas.com` defaults in `relayer/fly.toml`,
+> `relayer/.env.production.example`, and the relayer CORS tests were stale and
+> now read **`https://mydaywas.com`** (the apex origin the diary app ships
+> from). This section records the deletion as history.
+
 The app site built from a separate repo (`hgit.services-prod.nsvcs.net/obsanitylabs/mydaywas-app.git`,
 not the company GitHub). Salvage review of its latest deploy (6aebfa90d83abf629b566e92):
 
