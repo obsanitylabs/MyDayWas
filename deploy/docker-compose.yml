@@ -1,0 +1,83 @@
+# OBS-794: reference platform config for the chosen deployment model —
+# container/VM with a persistent local volume (docs/PRODUCTION-DEPLOY-MODEL.md)
+# on Vultr Cloud Compute (board direction 2026-11-05, OBS-598: "we're not going
+# to use Fly.io — instead we will use vultr").
+#
+# PLACEHOLDERS ONLY — this file commits NO secrets and NO real instance
+# identity. Every secret reaches the container via the root-owned
+# EnvironmentFile (mode 600) written at provision time from the Paperclip
+# secret store — NEVER via this file (this file is public).
+# Provisioning/deployment stays GATED on the OBS-237 external written sign-off
+# (docs/PRODUCTION-DEPLOYMENT.md §6). Costs sit inside the board-approved
+# envelope (OBS-357 `lean-envelope` rev 1: $25.00/mo cap — approvals
+# 063d6679 + a04b7903). The envelope is a ceiling, not a purchase.
+#
+# Topology (unchanged from the decided model): ONE instance, ONE process,
+# ONE persistent volume — the single writer IS the deployment model (CISO
+# OBS-234 precondition on SQLite WAL semantics).
+#
+# Image is built on-instance from the pinned git revision
+# (relayer/Dockerfile runs typecheck + full vitest inside the build — a red
+# suite produces no image). RELAYER_BUILD_REVISION is set by the runbook
+# deploy step, not here.
+
+services:
+  relayer:
+    # Built by the runbook: docker compose --file deploy/docker-compose.yml
+    # build relayer (or run from the instance checkout).
+    build:
+      context: ../relayer
+    image: mydaywas-relayer:${RELAYER_IMAGE_TAG:-unversioned}
+    restart: unless-stopped
+    # Single long-lived instance keeps day-over-day custody/Sybil baselines
+    # warm (OBS-234); no scaling, no replicas (single-writer topology).
+    # Non-secret platform env (matches relayer/.env.production.example).
+    environment:
+      RELAYER_PORT: "8081"
+      RELAYER_REQUIRE_TLS: "1"
+      RELAYER_RATE_PER_MIN: "60"
+      RELAYER_DB_PATH: "/data/mydaywas-relayer.db"
+      RELAYER_SUBMITTER: "dry-run"   # real cutover is CISO-gated (OBS-166/OBS-237)
+      # RELAYER_CHAIN_ID / RELAYER_CHAIN_ADDRESS / RELAYER_EOA_ADDRESS /
+      # RELAYER_KMS_* are set at provision time (placeholders, not committed).
+    # Secrets (RELAYER_ALERT_WEBHOOK, RELAYER_EOA_SECRET_KEY) come from the
+    # root-owned EnvironmentFile written from the Paperclip secret store
+    # (mode 600, never in this file, never in the image, never on the
+    # compose command line).
+    env_file:
+      - /etc/mydaywas-relayer/env
+    # F3/OBS-234: SQLite WAL on a persistent LOCAL volume — the Vultr Block
+    # Storage volume attached + mounted at /data by deploy/cloud-init.yml.
+    volumes:
+      - /data:/data
+    networks:
+      - edge
+    expose:
+      - "8081"
+
+  # TLS edge (OBS-794 decision 3): Caddy on the same instance terminates TLS
+  # (Let's Encrypt, HTTP-01 for relayer.mydaywas.com) and reverse-proxies to
+  # the relayer, setting x-forwarded-proto/x-forwarded-for. Chosen over a
+  # Vultr Load Balancer: the LB (~$10/mo with managed LE) would breach the
+  # relayer-hosting quote line, and a single-writer instance gains nothing
+  # from an LB in front of it.
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - edge
+
+volumes:
+  caddy-data:
+  caddy-config:
+
+networks:
+  edge:
+    internal: false

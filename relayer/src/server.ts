@@ -16,7 +16,7 @@
  *                            configured + keyIds present, submitter mode
  *                            (dry-run/real), build revision + uptime. Static
  *                            + config data only — no payload data, no
- *                            secrets; TLS-exempt so LB probes over plain
+ *                            secrets; TLS-exempt so edge probes over plain
  *                            local HTTP succeed.
  */
 
@@ -55,7 +55,8 @@ export interface RelayerConfig {
   ratePerMin?: number;
   /**
    * OBS-87 TLS-only edge: when true, reject any request whose
-   * x-forwarded-proto is not https (TLS terminates at the LB in front of
+   * x-forwarded-proto is not https (TLS terminates at the edge — on-host
+   * Caddy, OBS-794 — in front of
    * this process). Staging default false.
    */
   requireTls?: boolean;
@@ -214,7 +215,7 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
         res.end(JSON.stringify(body));
       };
       // OBS-264 + OBS-313 D2: production readiness probe. Exempt from
-      // requireTls (LB probes plain local HTTP without x-forwarded-proto)
+      // requireTls (the edge probes plain local HTTP without x-forwarded-proto)
       // and from rate shaping. Config + readiness data only — no payload
       // data, no secrets (keyIds are versioned public fingerprints).
       if (req.method === "GET" && req.url === "/healthz") {
@@ -246,7 +247,8 @@ export function createSignalServer(custody: KeyCustody, cfg: RelayerConfig = {})
       if (req.method !== "POST" || ![ "/v1/signals", "/v1/publish" ].includes(req.url ?? "")) {
         return respond(404, { error: "not_found" });
       }
-      // OBS-87: TLS-only edge in production (TLS terminates at the LB).
+      // OBS-87: TLS-only edge in production (TLS terminates at the edge —
+      // on-host Caddy per OBS-794; Vultr has no provider LB).
       if (cfg.requireTls && req.headers["x-forwarded-proto"] !== "https") {
         return respond(426, { error: "tls_required" });
       }

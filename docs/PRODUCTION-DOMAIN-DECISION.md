@@ -2,7 +2,7 @@
 
 **Owner:** CTO. **Recorded:** 2026-10-31. **Status:** decided + **stood up
 2026-10-31 (OBS-442)** — `app.mydaywas.com` is live over TLS; `relayer`
-record deferred to LB provisioning (see Known limitation).
+record deferred to TLS-edge provisioning (see Known limitation).
 
 ## Decision
 
@@ -12,7 +12,7 @@ record.**
 | Surface | URL | Hosting | Status |
 | --- | --- | --- | --- |
 | App (diary) | `https://app.mydaywas.com` | Netlify site `mydaywas-app` (e862bd6d) | **Live 2026-10-31 (OBS-442): HTTP 200 over TLS** (Let's Encrypt, apex-SAN cert) |
-| Relayer API | `https://relayer.mydaywas.com` | Behind the TLS LB of the container deployment (`deploy/README.md`) | **Record at LB provisioning** (stage 7) — LB does not exist yet; no record created |
+| Relayer API | `https://relayer.mydaywas.com` | Behind the on-host Caddy TLS edge of the Vultr container deployment (`deploy/README.md`, OBS-794) | **Record at TLS-edge provisioning** (stage 7) — the Vultr instance/edge does not exist yet; no record created |
 | Landing | the landing page CTA (`src/config.js` `APP_URL`) | GitHub Pages → points at the app URL of record | **Updated in this change** |
 
 `mydaywas.com` apex already resolves to Netlify (HTTP 200, verified
@@ -45,7 +45,7 @@ matches the recorded OBS-77 carry-over decision.
 
 ## Known limitation (recorded, not hidden)
 
-Until the LB is provisioned, `https://relayer.mydaywas.com` does not resolve.
+Until the TLS edge is provisioned, `https://relayer.mydaywas.com` does not resolve.
 The **app** record is no longer a limitation: **stood up 2026-10-31 (OBS-442)**
 via the Netlify API with the managed `netlify-obsanity-token` secret:
 
@@ -62,10 +62,11 @@ via the Netlify API with the managed `netlify-obsanity-token` secret:
   its CTA at `https://app.mydaywas.com/` — **target verified 200**, so the
   merge/deploy of that branch no longer ships a dead CTA.
 
-**`relayer.mydaywas.com` stands up at LB provisioning (stage 7, OBS-264):**
-the record cannot point at a load balancer that does not exist, and the
-production deploy itself remains gated behind OBS-237 written sign-off and the
-stage-6 CISO control sign-off. The landing CTA does not point at the relayer
-host, so this deferral carries no funnel hazard. Creation of the record
-(CNAME/ALIAS to the LB hostname) is an explicit step of the OBS-264 runbook
+**`relayer.mydaywas.com` stands up at TLS-edge provisioning (stage 7,
+OBS-264):** the record cannot point at a Vultr instance that does not exist,
+and the production deploy itself remains gated behind OBS-237 written
+sign-off and the stage-6 CISO control sign-off. The landing CTA does not
+point at the relayer host, so this deferral carries no funnel hazard.
+Creation of the record (A/ALIAS to the instance IP, answering the Caddy edge
+— OBS-794; no Vultr Load Balancer) is an explicit step of the OBS-264 runbook
 (steps 2–3 + step 6 wiring).

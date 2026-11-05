@@ -1,0 +1,44 @@
+#cloud-config
+# OBS-794: instance bootstrap (cloud-init) for the Vultr deployment model.
+# PLACEHOLDERS ONLY — no secrets here; secret values land at provision time
+# via the root-owned EnvironmentFile written from the Paperclip secret store.
+# Provisioning is GATED on the OBS-237 external written sign-off
+# (docs/PRODUCTION-DEPLOYMENT.md §6). No vendor account/instance/volume is
+# created by this file — it is the reference config applied at provisioning
+# (OBS-468) once the gates clear.
+
+package_update: true
+packages:
+  - docker.io
+  - docker-compose-v2
+
+write_files:
+  - path: /etc/mydaywas-relayer/README
+    permissions: "0644"
+    content: |
+      Secrets directory. The runbook writes /etc/mydaywas-relayer/env
+      (root:root, mode 0600) from the Paperclip secret store at provision
+      time. compose reads it via env_file. Never commit values.
+  - path: /etc/systemd/system/mydaywas-relayer.service.d/10-env.conf
+    permissions: "0644"
+    content: |
+      [Service]
+      EnvironmentFile=/etc/mydaywas-relayer/env
+
+runcmd:
+  # F3/OBS-234: format + mount the Vultr Block Storage volume as the
+  # persistent local volume at /data (single-writer SQLite WAL).
+  # PLACEHOLDER device — confirm the attached device at provision time.
+  - |
+    blkid /dev/vdb || mkfs.ext4 /dev/vdb
+  - |
+    mkdir -p /data
+    grep -q '/dev/vdb' /etc/fstab || \
+      echo '/dev/vdb /data ext4 defaults,nofail 0 2' >> /etc/fstab
+    mount -a
+  # Relayer data dir owned by the container's non-root service user
+  # (relayer/Dockerfile: uid/gid per node:24-slim 'relayer' system user).
+  - |
+    install -d -o 999 -g 999 -m 0750 /data
+  - systemctl daemon-reload
+  - systemctl enable --now docker
