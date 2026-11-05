@@ -10,8 +10,6 @@ import { isFollowUpEnabled, markPrompted, onDeviceFollowUp, setFollowUpEnabled, 
 import { collectEndpoint, emitEntrySaved, emitEntryStarted, emitMdw, type AnalyticsDeps } from "../analytics/events";
 import { getReferralPseudonym, rotateReferralPseudonym } from "../referral/pseudonym";
 import {
-  REGIONS,
-  SPECIAL_CATEGORY_FIELDS,
   getReferralConsent,
   revokeReferral,
   setReferralConsent,
@@ -30,13 +28,13 @@ import {
   REFERRAL_LABELS,
   SIGNALS_BETA_LINE,
 } from "../legal/betaCopy";
+import { Nav } from "./Nav";
+import { ShelfView } from "./ShelfView";
+import { StatsView } from "./StatsView";
+import { HandView } from "./HandView";
+import { useHashRoute } from "./useHashRoute";
 
 const SENTIMENTS: Sentiment[] = ["POSITIVE", "NEGATIVE", "NEUTRAL"];
-
-function dayLabel(day: number): string {
-  const d = new Date(day * 86_400_000);
-  return d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
-}
 
 function download(name: string, content: string, type: string): void {
   const blob = new Blob([content], { type });
@@ -64,6 +62,7 @@ export function App(): React.ReactElement {
   // persisted, never sent anywhere; used once by Diary.onboard and cleared.
   const [onboardPw, setOnboardPw] = useState("");
   const bootRef = useRef(false);
+  const { route, navigate } = useHashRoute();
 
   // M4: anonymous signals, follow-up prompt, referral stub
   const storage = globalThis.localStorage;
@@ -429,7 +428,16 @@ export function App(): React.ReactElement {
   return (
     <div className="app">
       <header className="site">
-        <h1>MyDayWas</h1>
+        <h1>
+          <button
+            type="button"
+            className="brand"
+            onClick={() => navigate("compose")}
+            aria-label="Write — back to the compose view"
+          >
+            MyDayWas
+          </button>
+        </h1>
         <span className="tag">private diary · v1 (M4 staging)</span>
       </header>
 
@@ -459,7 +467,7 @@ export function App(): React.ReactElement {
         </div>
       )}
 
-      {betaAck && (
+      {betaAck && route === "compose" && (
       <div className="card">
         <p className="hint">
           Entries are encrypted on this device with AES-GCM-256 before they are stored or synced.
@@ -496,7 +504,7 @@ export function App(): React.ReactElement {
       </div>
       )}
 
-      {diary && betaAck && (
+      {diary && route === "compose" && (
         <>
           <div className="card">
             <h2>How was your day?</h2>
@@ -562,6 +570,20 @@ export function App(): React.ReactElement {
                 ? "One optional reflection prompt after you save an entry. Generated on this device; your answer is encrypted with the entry. You can skip any prompt."
                 : "No follow-up prompts. Your saved entries are unchanged. Turn on to get one optional reflection prompt after you save an entry."}
             </p>
+
+            {/* PRIVY_EXPORT_SECTION — seed phrase / wallet recovery.
+                Hidden and disabled until Privy is configured (VITE_PRIVY_APP_ID).
+                The Privy integration itself is out of scope while no App ID
+                exists, so this surface is accounted for but exposes no export
+                path yet. See src/auth/privy.ts. */}
+            <fieldset className="recovery" disabled>
+              <legend>Seed phrase / wallet recovery</legend>
+              <p className="hint">
+                Not enabled in this build. Once wallet recovery is configured, you will be able to
+                export a recovery phrase here to restore access to this diary on a new device.
+              </p>
+              <button type="button" disabled>Export wallet recovery</button>
+            </fieldset>
           </div>
 
           <div className="card signals">
@@ -585,141 +607,6 @@ export function App(): React.ReactElement {
               {signalsOn && <button className="danger" onClick={() => void toggleSignals(false)}>Turn off</button>}
             </div>
             {signalStatus && <p className="hint">{signalStatus}</p>}
-          </div>
-
-          <div className="card referral">
-            <h2>Partner referral (preview stub)</h2>
-            <p className="hint">
-              Staging placeholder — not a live partner; no request is delivered anywhere in this preview.
-              A separate referral pseudonym is used — never your wallet. Every field starts unticked;
-              consent is per field, and each sensitive health field needs its own explicit confirmation.
-              Queued items are purged within 30 days, and revocation clears the queue and rotates the pseudonym.
-            </p>
-            <div className="row">
-              <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <input
-                  type="checkbox"
-                  checked={refConsent.referralEnabled}
-                  onChange={(e) => updateRefConsent({ referralEnabled: e.target.checked })}
-                />
-                Let a partner reach me
-              </label>
-            </div>
-            {refConsent.referralEnabled && (
-              <>
-                <div className="row">
-                  <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <input
-                      type="checkbox"
-                      checked={refConsent.fields.contactMethod}
-                      onChange={(e) => updateRefConsent({ fields: { ...refConsent.fields, contactMethod: e.target.checked } })}
-                    />
-                    Contact method (required — how they can reply)
-                  </label>
-                  {refConsent.fields.contactMethod && (
-                    <span className="sentiments" style={{ display: "flex", gap: 6 }}>
-                      <select value={contactType} onChange={(e) => setContactType(e.target.value as "email" | "phone")}>
-                        <option value="email">email</option>
-                        <option value="phone">phone</option>
-                      </select>
-                      <input
-                        placeholder={contactType === "email" ? "email address" : "phone number"}
-                        value={contactValue}
-                        onChange={(e) => setContactValue(e.target.value)}
-                      />
-                    </span>
-                  )}
-                </div>
-                <div className="row">
-                  <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <input
-                      type="checkbox"
-                      checked={refConsent.fields.region}
-                      onChange={(e) => updateRefConsent({ fields: { ...refConsent.fields, region: e.target.checked } })}
-                    />
-                    Region (broad only)
-                  </label>
-                  {refConsent.fields.region && (
-                    <select value={region} onChange={(e) => setRegion(e.target.value as ReferralRegion)}>
-                      {REGIONS.map((r) => (
-                        <option key={r} value={r}>{r}</option>
-                      ))}
-                    </select>
-                  )}
-                </div>
-                {SPECIAL_CATEGORY_FIELDS.map((f) => (
-                  <div className="row" key={f}>
-                    <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <input
-                        type="checkbox"
-                        checked={refConsent.specialCategory[f]}
-                        onChange={(e) => tickSpecial(f, e.target.checked)}
-                      />
-                      {REFERRAL_LABELS[f]} (own confirmation)
-                    </label>
-                  </div>
-                ))}
-                {refConsent.specialCategory.crisis && (
-                  <p className="hint">
-                    If you are in immediate danger, contact your local emergency number now. The staging
-                    placeholder partner is not an emergency service. We do not monitor your entries or your request.
-                  </p>
-                )}
-                <p className="hint">
-                  Referral pseudonym: <code>{getReferralPseudonym(storage).slice(0, 12)}…</code>{" "}
-                  (separate from your wallet)
-                </p>
-              </>
-            )}
-            <div className="row">
-              <button onClick={enqueueReferralItem} disabled={!refConsent.referralEnabled || !refConsent.fields.contactMethod || !contactValue.trim()}>
-                Queue preview (not delivered)
-              </button>
-              <button onClick={() => { const n = purge(storage); setRefStatus(`Purged ${n} expired queue item(s).`); }}>
-                Purge queue now
-              </button>
-              <span className="spacer" />
-              <button
-                className="danger"
-                onClick={() => {
-                  revokeReferral(storage);
-                  clearQueue(storage);
-                  rotateReferralPseudonym(storage);
-                  setRefConsentState(getReferralConsent(storage));
-                  setRefStatus("Referral consent revoked: queue cleared, pseudonym rotated.");
-                }}
-              >
-                Revoke referral consent
-              </button>
-            </div>
-            {refStatus && <p className="hint">{refStatus}</p>}
-          </div>
-
-          <div className="card">
-            <h2>Your diary ({entries.length})</h2>
-            {entries.length === 0 && <p className="hint">No entries yet.</p>}
-            {Object.entries(
-              entries.reduce<Record<number, DecryptedEntry[]>>((acc, e) => {
-                (acc[e.day] ??= []).push(e);
-                return acc;
-              }, {}),
-            )
-              .sort((a, b) => Number(b[0]) - Number(a[0]))
-              .map(([day, list]) => (
-                <div className="daygroup" key={day}>
-                  <div className="daylabel">{dayLabel(Number(day))}</div>
-                  {list.map((e) => (
-                    <div className="entry" key={e.id}>
-                      <div className="meta">
-                        <span className={"sent " + e.sentiment}>{e.sentiment.toLowerCase()}</span>
-                        <span className="spacer" />
-                        <button className="danger" onClick={() => del(e.id)}>Delete</button>
-                      </div>
-                      <p className="text">{e.text}</p>
-                    </div>
-                  ))}
-                </div>
-              ))}
           </div>
 
           <div className="card">
@@ -755,6 +642,40 @@ export function App(): React.ReactElement {
           </div>
         </>
       )}
+
+      {betaAck && route === "shelf" && <ShelfView entries={entries} onDelete={del} />}
+
+      {betaAck && route === "stats" && <StatsView entries={entries} />}
+
+      {betaAck && route === "hand" && (
+        <HandView
+          consent={refConsent}
+          contactType={contactType}
+          contactValue={contactValue}
+          region={region}
+          status={refStatus}
+          pseudonym={getReferralPseudonym(storage)}
+          onConsentChange={updateRefConsent}
+          onToggleSpecial={tickSpecial}
+          onContactTypeChange={setContactType}
+          onContactValueChange={setContactValue}
+          onRegionChange={setRegion}
+          onQueue={enqueueReferralItem}
+          onPurge={() => {
+            const n = purge(storage);
+            setRefStatus(`Purged ${n} expired queue item(s).`);
+          }}
+          onRevoke={() => {
+            revokeReferral(storage);
+            clearQueue(storage);
+            rotateReferralPseudonym(storage);
+            setRefConsentState(getReferralConsent(storage));
+            setRefStatus("Referral consent revoked: queue cleared, pseudonym rotated.");
+          }}
+        />
+      )}
+
+      {betaAck && <Nav route={route} onNavigate={navigate} />}
     </div>
   );
 }
