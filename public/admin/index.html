@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Obsanity Labs — waitlist admin</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #f6f7f9; margin: 0; padding: 2rem 1rem 4rem; color: #16191d; }
+  main { max-width: 980px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; }
+  h2 { font-size: 1.05rem; margin: 2rem 0 .6rem; }
+  .card { background: #fff; border: 1px solid #e2e4e8; border-radius: 12px; padding: 1rem 1.2rem; margin-bottom: 1rem; }
+  input { padding: .6rem; border: 1px solid #ccc; border-radius: 8px; width: min(420px, 90%); font-size: .95rem; }
+  button { background: #134074; color: #fff; border: 0; padding: .6rem 1.2rem; border-radius: 8px; font-weight: 600; cursor: pointer; }
+  table { border-collapse: collapse; width: 100%; font-size: .85rem; }
+  th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid #eee; }
+  th { background: #f0f2f5; }
+  .kpi { display: flex; gap: 1rem; flex-wrap: wrap; }
+  .kpi div { background: #f0f2f5; padding: .6rem 1rem; border-radius: 10px; min-width: 120px; }
+  .kpi b { display: block; font-size: 1.3rem; }
+  .muted { color: #666; font-size: .8rem; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Waitlist admin — Obsanity Labs (4 products)</h1>
+  <p class="muted">All data below is fetched from <code>/api/waitlist/stats</code>, which is protected by a
+  server-side bearer token (<code>WAITLIST_ADMIN_TOKEN</code>). This page contains no data until a valid
+  token is entered; it renders only aggregates, never individual emails. CSV export uses a separate
+  token (<code>WAITLIST_EXPORT_TOKEN</code>) and every export is access-logged server-side.</p>
+
+  <div class="card">
+    <label for="adminToken"><b>Admin token</b></label><br><br>
+    <input id="adminToken" type="password" placeholder="paste admin token (held in memory only)">
+    <button id="loadBtn">Load stats</button>
+    <span id="authStatus" class="muted"></span>
+  </div>
+
+  <div class="card hidden" id="dash">
+    <h2>Overview</h2>
+    <div id="kpi" class="kpi"></div>
+    <div id="tables"></div>
+  </div>
+
+  <div class="card">
+    <h2>CSV export (CMO/CTO only — token-gated + access-logged)</h2>
+    <input id="exportToken" type="password" placeholder="paste export token">
+    <button id="exportBtn">Download CSV</button>
+    <span id="exportStatus" class="muted"></span>
+  </div>
+</main>
+<script>
+const PRODUCTS = ['unbound-science', 'phreaking-fun', 'mydaywas', 'draftcrypto'];
+const $ = (id) => document.getElementById(id);
+
+function kpiCard(label, val) { return '<div><span class="muted">' + label + '</span><b>' + val + '</b></div>'; }
+
+$('loadBtn').addEventListener('click', async function () {
+  $('authStatus').textContent = 'loading…';
+  const r = await fetch('/api/waitlist/stats', { headers: { authorization: 'Bearer ' + $('adminToken').value } });
+  if (r.status !== 200) { $('authStatus').textContent = 'not authorized (' + r.status + ') — wrong or missing token.'; $('dash').classList.add('hidden'); return; }
+  $('authStatus').textContent = 'authorized';
+  $('dash').classList.remove('hidden');
+  const d = await r.json();
+  let totalVerified = 0, kpi = '';
+  for (const p of PRODUCTS) {
+    const s = d.products[p]; totalVerified += s.counts.verified || 0;
+    kpi += kpiCard(p + ' verified', s.counts.verified || 0)
+         + kpiCard(p + ' pending', s.counts.pending || 0)
+         + kpiCard(p + ' verify rate', Math.round((s.verification_rate || 0) * 100) + '%');
+  }
+  kpi += kpiCard('TOTAL verified', totalVerified) + kpiCard('suppressed', d.suppressed_total);
+  $('kpi').innerHTML = kpi;
+
+  let t = '';
+  const FUNNEL = ['waitlist_view', 'waitlist_submit', 'waitlist_verified', 'referral_share'];
+  for (const p of PRODUCTS) {
+    const s = d.products[p];
+    const daily = Object.entries(s.daily).sort().slice(-30);
+    const sources = Object.entries(s.sources).sort((a, b) => b[1] - a[1]);
+    const camps = Object.entries(s.campaigns).sort((a, b) => b[1] - a[1]).slice(0, 10);
+    const cids = Object.entries(s.campaign_ids || {}).sort((a, b) => b[1] - a[1]);
+    t += '<h2>' + p + '</h2>';
+    t += '<h2 style="font-size:.9rem">' + p + ' — waitlist funnel (view → submit → verified → referral share)</h2>';
+    t += '<table><tr><th>step</th><th>events</th><th>% of previous step</th><th>% of views</th></tr>';
+    const base = s.event_counts.waitlist_view || 0;
+    let prev = null;
+    for (const step of FUNNEL) {
+      const n = s.event_counts[step] || 0;
+      const pctPrev = prev === null ? '—' : (prev > 0 ? Math.round((n / prev) * 1000) / 10 + '%' : '—');
+      const pctBase = base > 0 ? Math.round((n / base) * 1000) / 10 + '%' : (prev === null ? '100%' : '—');
+      t += '<tr><td>' + step + '</td><td>' + n + '</td><td>' + pctPrev + '</td><td>' + pctBase + '</td></tr>';
+      prev = n;
+    }
+    t += '</table>';
+    t += '<table><tr>' + ['status counts', ''].map(x => '<th>' + x + '</th>').join('') + '</tr>';
+    for (const [k, v] of Object.entries(s.counts)) t += '<tr><td>' + k + '</td><td>' + v + '</td></tr>';
+    t += '</table><h2 style="font-size:.9rem">' + p + ' — daily verified signups (30d)</h2><table>';
+    for (const [day, n] of daily) t += '<tr><td>' + day + '</td><td>' + n + '</td></tr>';
+    t += '</table><h2 style="font-size:.9rem">' + p + ' — source mix</h2><table>';
+    for (const [src, n] of sources) t += '<tr><td>' + src + '</td><td>' + n + '</td></tr>';
+    t += '</table><h2 style="font-size:.9rem">' + p + ' — UTM campaign mix (top 10)</h2><table>';
+    for (const [c, n] of camps) t += '<tr><td>' + c + '</td><td>' + n + '</td></tr>';
+    t += '</table><h2 style="font-size:.9rem">' + p + ' — campaign registry join (utm_campaign/utm_id → verified)</h2><table>';
+    for (const [c, n] of cids) t += '<tr><td>' + c + '</td><td>' + n + '</td></tr>';
+    t += '</table><h2 style="font-size:.9rem">' + p + ' — referral leaderboard</h2><table>';
+    for (const row of s.referral_leaderboard) t += '<tr><td>' + row.referral_code + '</td><td>' + row.verified_referred + '</td></tr>';
+    t += '</table>';
+  }
+  $('tables').innerHTML = t;
+});
+
+$('exportBtn').addEventListener('click', async function () {
+  $('exportStatus').textContent = 'requesting…';
+  const r = await fetch('/api/waitlist/export', { headers: { authorization: 'Bearer ' + $('exportToken').value } });
+  if (r.status !== 200) { $('exportStatus').textContent = 'export not authorized (' + r.status + ')'; return; }
+  const blob = await r.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'waitlist-export.csv'; a.click();
+  $('exportStatus').textContent = 'exported (this access was logged server-side)';
+});
+</script>
+</body>
+</html>

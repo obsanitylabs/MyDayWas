@@ -5,6 +5,76 @@
 [build.environment]
   NODE_VERSION = "22"
 
+[functions]
+  node_bundler = "esbuild"
+
+# OBS-125 — API routes must stay above any SPA catch-all so the functions are
+# reached instead of the app shell. The functions also declare these paths in
+# their own config; the explicit rules here pin the ordering.
+[[redirects]]
+  from = "/api/collect"
+  to = "/.netlify/functions/collect"
+  status = 200
+
+[[redirects]]
+  from = "/api/insights"
+  to = "/.netlify/functions/insights"
+  status = 200
+
+# OBS-203 — shared waitlist admin page + waitlist API routes. These routes MUST
+# stay above the SPA catch-all; the functions also declare their own paths.
+[[redirects]]
+  from = "/admin/"
+  to = "/admin/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/waitlist/mydaywas/"
+  to = "/waitlist/mydaywas/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/api/waitlist"
+  to = "/.netlify/functions/waitlist-submit"
+  status = 200
+
+[[redirects]]
+  from = "/api/waitlist/confirm"
+  to = "/.netlify/functions/waitlist-confirm"
+  status = 200
+
+[[redirects]]
+  from = "/api/waitlist/unsubscribe"
+  to = "/.netlify/functions/waitlist-unsubscribe"
+  status = 200
+
+[[redirects]]
+  from = "/api/waitlist/event"
+  to = "/.netlify/functions/waitlist-event"
+  status = 200
+
+[[redirects]]
+  from = "/api/waitlist/stats"
+  to = "/.netlify/functions/waitlist-stats"
+  status = 200
+
+[[redirects]]
+  from = "/api/waitlist/export"
+  to = "/.netlify/functions/waitlist-export"
+  status = 200
+
+[[redirects]]
+  from = "/api/waitlist/outbox"
+  to = "/.netlify/functions/waitlist-outbox"
+  status = 200
+
+# OBS-125 — the insights dashboard is a static page under public/insights/.
+# Pin it above any SPA catch-all so /insights/ serves the dashboard, not the app shell.
+[[redirects]]
+  from = "/insights/"
+  to = "/insights/index.html"
+  status = 200
+
 # Video frames never change under the same name, so let browsers cache them
 [[headers]]
   for = "/video*/*"
