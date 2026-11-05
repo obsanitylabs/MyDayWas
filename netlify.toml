@@ -1,6 +1,9 @@
+# OBS-789 — single-site consolidation: the apex site serves the landing page at /
+# AND the encrypted diary app at /app/, plus the collect/waitlist/insights
+# functions. The former app.mydaywas.com site (mydaywas-app) is retired.
 [build]
   publish = "dist"
-  command = "npm run build"
+  command = "npm run build && npm --prefix diary ci --no-audit --no-fund && npm --prefix diary run build && rm -rf dist/app && cp -R diary/dist dist/app"
 
 [build.environment]
   NODE_VERSION = "22"
@@ -73,6 +76,18 @@
 [[redirects]]
   from = "/insights/"
   to = "/insights/index.html"
+  status = 200
+
+# OBS-789 — diary app SPA shell at /app. Kept below the /api/* rules above so
+# API routes always win; the app itself never claims /api paths.
+[[redirects]]
+  from = "/app"
+  to = "/app/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/app/*"
+  to = "/app/index.html"
   status = 200
 
 # Video frames never change under the same name, so let browsers cache them
