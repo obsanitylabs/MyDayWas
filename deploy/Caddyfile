@@ -1,0 +1,17 @@
+# OBS-794: TLS edge for the Vultr deployment model — Caddy terminates TLS
+# (managed Let's Encrypt certificate via HTTPS/HTTP-01 challenge) for
+# relayer.mydaywas.com and reverse-proxies to the relayer container.
+#
+# The process itself enforces the TLS edge (RELAYER_REQUIRE_TLS=1 → 426 on
+# any request whose x-forwarded-proto is not https), so this proxy is the
+# trusted edge, not the security boundary.
+#
+# Client IP (OBS-794 decision 4): Caddy (no trusted_proxies configured)
+# overwrites x-forwarded-for with the direct-socket peer — the real client
+# IP — so per-IP rate shaping keys on a value the client cannot spoof.
+# Vultr has no provider-set client-IP header (no fly-client-ip equivalent);
+# the trusted-last-hop x-forwarded-for is the chosen mechanism.
+
+relayer.mydaywas.com {
+	reverse_proxy relayer:8081
+}

@@ -35,11 +35,20 @@ inconsistent.
 ## 2. Network surface
 
 ### Ingress
-- **`443/tcp` (TLS) at the LB** → `8081/tcp` internal to the relayer process.
-  The process itself enforces `x-forwarded-proto: https`
-  (`RELAYER_REQUIRE_TLS=1`, `426` otherwise).
+- **`443/tcp` (TLS) at the on-host Caddy edge** (Vultr Cloud Compute
+  instance, `deploy/Caddyfile`; OBS-794 — no Vultr Load Balancer) →
+  `8081/tcp` internal to the relayer container. The process itself enforces
+  `x-forwarded-proto: https` (`RELAYER_REQUIRE_TLS=1`, `426` otherwise).
+- **Client IP:** trusted-last-hop `x-forwarded-for` — Caddy (no
+  `trusted_proxies`) overwrites XFF with the direct-socket peer, so per-IP
+  rate shaping keys on a spoof-safe value (OBS-794 decision; Vultr has no
+  provider edge header).
+- **Instance secrets:** Paperclip secret store → root-owned
+  `EnvironmentFile=/etc/mydaywas-relayer/env` (mode 0600) → compose
+  `env_file:` (OBS-794; replaces the retired platform secret-store CLI
+  path).
 - **`/healthz`** is the only probe surface (TLS-exempt by design so plain
-  local HTTP LB probes succeed; carries readiness data only — no payload data,
+  local HTTP edge probes succeed; carries readiness data only — no payload data,
   no secrets).
 - No other ports, no direct instance exposure (no SSH with password; any
   ops access is via the platform's session tooling, which is audited).

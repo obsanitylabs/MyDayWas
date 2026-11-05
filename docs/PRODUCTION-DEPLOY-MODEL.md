@@ -17,19 +17,44 @@ Chosen over the CFO's other two models:
 
 ## Provider + topology
 
-- **Provider class:** Fly.io / ECS Fargate / Railway (reference config:
-  `deploy/fly.toml`; final provider picked at provisioning inside the same
-  cost envelope). 
+- **Provider (decided, OBS-794 / board direction 2026-11-05 in OBS-598):**
+  **Vultr** Cloud Compute (raw IaaS; supersedes the earlier Fly.io / ECS
+  Fargate / Railway shortlist). Reference configs:
+  `deploy/docker-compose.yml` (+ `deploy/Caddyfile`, `deploy/cloud-init.yml`);
+  placeholders only — instance/volume ids set at provisioning (OBS-468)
+  inside the same cost envelope. Vultr Kubernetes Engine is **rejected**: a
+  managed-K8s control plane adds cost and machinery that a single-writer
+  instance topology does not need.
 - **Topology: single writer.** One instance against one persistent volume
   (`/data`). Multi-instance would have to share a host/local volume; not
   planned for the beta — the single writer IS the deployment model (CISO
   OBS-234 precondition on WAL semantics).
-- **TLS:** terminates at the platform LB; the process enforces the edge
-  itself (`RELAYER_REQUIRE_TLS=1` → `426` on missing `x-forwarded-proto`).
+- **TLS:** terminates at an on-host Caddy edge (managed Let's Encrypt for
+  `relayer.mydaywas.com`; `deploy/Caddyfile`) reverse-proxying to the
+  process; the process enforces the edge itself
+  (`RELAYER_REQUIRE_TLS=1` → `426` on missing `x-forwarded-proto`). A Vultr
+  Load Balancer with managed TLS was **rejected**: it breaches the quoted
+  hosting line and adds nothing to a single-writer topology.
+- **Client IP:** trusted-last-hop `x-forwarded-for` (Caddy, no
+  `trusted_proxies`, overwrites XFF with the direct-socket peer — spoof-safe
+  per-IP rate shaping). Vultr has no provider-set edge header; none is needed
+  (the trusted-last-hop XFF replaces the retired PaaS edge header, OBS-794).
+- **Secrets:** Paperclip secret store → root-owned `EnvironmentFile`
+  `/etc/mydaywas-relayer/env` (mode 0600) → compose `env_file:` into the
+  container. Fail-closed boot unchanged (OBS-300 custody guard).
 - **Image:** `relayer/Dockerfile` — typecheck + full vitest run inside the
   build; non-root service user; `HEALTHCHECK` on `GET /healthz`.
 
-## Expected monthly cost (inside the board-APPROVED envelope: $9.44/mo planned, $25.00/mo cap)
+## Expected monthly cost (inside the board-APPROVED envelope: $25.00/mo cap)
+
+**Re-quoted OBS-794 (2026-11-05)** against Vultr list pricing after the board's
+provider change (OBS-598): relayer hosting = Cloud Compute Regular Performance
+1 vCPU/1 GB/25 GB NVMe ($6.00/mo) + Block Storage 10 GB ($0.10/GB/mo →
+$1.00/mo) + on-host Caddy/LE ($0) = **$7.00/mo**, replacing the retired
+$3.86/mo Fly.io line. Planned total moves **$9.44 → $13.21/mo**; the
+board-approved **$25.00/mo cap is unchanged and respected**. No spend is
+committed by this re-quote — provisioning stays gated (OBS-237/OBS-468) and
+the CFO/CEO provisioning approval re-runs against these numbers.
 
 The board **rejected** the earlier two-thousand-per-month planned /
 two-and-a-half-thousand-per-month cap proposal (card `0801aba1`) on
@@ -39,13 +64,13 @@ below are the recorded quote set, not estimates.
 
 | Item | Quoted |
 | --- | --- |
-| Fly.io relayer hosting (1 small container/VM + persistent volume) | $3.86/mo |
+| Vultr relayer hosting (Cloud Compute 1 vCPU/1 GB + 10 GB Block Storage + on-host Caddy TLS) | $7.00/mo |
 | AWS KMS — 2 customer-managed keys (HMAC blinder + P-256 signer) | $4.01/mo |
 | Alchemy RPC (PAYG, inside the 30M CU free allowance) | $0.00/mo |
 | Better Stack monitoring/alerting (free tier + Slack incoming webhook) | $0.00/mo |
 | Local LM Studio inference (shared internal hardware) | $0.00/mo |
-| **Subtotal** | **$7.87/mo** |
-| + 20% contingency | **$9.44/mo planned** |
+| **Subtotal** | **$11.01/mo** |
+| + 20% contingency | **$13.21/mo planned** |
 | **Cap (board-approved ceiling)** | **$25.00/mo** |
 
 ### Named exclusions (NOT in the number — each needs a fresh board decision)

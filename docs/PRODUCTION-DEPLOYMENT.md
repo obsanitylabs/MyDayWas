@@ -21,15 +21,18 @@ Chosen over serverless (option 1) and managed automation (option 3):
   sessions and the day-over-day custody-usage/Sybil baselines
   (`CustodyUsageMonitor`, `SybilEarlyWarning`) in ways per-request cold starts
   would not.
-- **Fixed cost** ($3.86/mo quoted for the relayer host, inside the
-  board-approved lean envelope — $9.44/mo planned, $25.00/mo cap; approvals
+- **Fixed cost** ($7.00/mo re-quoted OBS-794 for the Vultr relayer host, inside
+  the board-approved lean envelope — $13.21/mo planned, $25.00/mo cap; approvals
   `063d6679` + `a04b7903`, OBS-357 `lean-envelope` rev 1) with margin; managed relayer
   (Gelato/Chainlink) forfeits control of the submitter + signed reconciliation
   artifact path that OBS-237 is auditing.
 
-Target shape: 1 small container instance (Fly.io / ECS Fargate / Railway class)
-with a persistent volume, behind a TLS-terminating LB honoring
-`x-forwarded-proto` (`RELAYER_REQUIRE_TLS=1` enforced in-process).
+Target shape (OBS-794, board direction 2026-11-05 / OBS-598 — **Vultr**, superseding
+Fly.io): 1 Vultr Cloud Compute container instance (1 vCPU/1 GB) with a 10 GB
+Block Storage volume mounted at `/data`, fronted by an on-host Caddy TLS edge
+(managed Let's Encrypt) honoring `x-forwarded-proto`
+(`RELAYER_REQUIRE_TLS=1` enforced in-process). Reference configs:
+`deploy/docker-compose.yml`, `deploy/Caddyfile`, `deploy/cloud-init.yml`.
 
 ### 1.2 Custody: **Cloud KMS** (not dedicated HSM) for the beta
 
@@ -125,18 +128,20 @@ Full contract + injection paths: `relayer/.env.production.example` and
 ## 5. Vendor quotes — recorded (OBS-357 `lean-envelope` rev 1)
 
 The five production lines are **already quoted** (vendor + list price, board
-approvals `063d6679` + `a04b7903`, envelope **$9.44/mo planned / $25.00/mo
-cap**):
+approvals `063d6679` + `a04b7903`, envelope cap **$25.00/mo**; re-quoted
+OBS-794 against Vultr list pricing after the board's 2026-11-05 provider
+change recorded in OBS-598 — planned total moves $9.44 → **$13.21/mo**,
+still inside the unchanged cap):
 
 | Line | Vendor | Quoted |
 | --- | --- | --- |
-| Relayer hosting (1 container/VM + persistent volume) | Fly.io | $3.86/mo |
+| Relayer hosting (Cloud Compute 1 vCPU/1 GB + Block Storage 10 GB + on-host Caddy TLS) | Vultr | $7.00/mo |
 | KMS (2 customer-managed keys: HMAC blinder + P-256 signer) | AWS | $4.01/mo |
 | Chain RPC (PAYG, inside the 30M CU free allowance) | Alchemy | $0.00/mo |
 | Monitoring/alerting (free tier + Slack incoming webhook) | Better Stack | $0.00/mo |
 | Inference (local LM Studio on shared internal hardware) | internal | $0.00/mo |
-| **Subtotal** | | **$7.87/mo** |
-| **Planned (subtotal + 20% contingency) / cap** | | **$9.44/mo / $25.00/mo** |
+| **Subtotal** | | **$11.01/mo** |
+| **Planned (subtotal + 20% contingency) / cap** | | **$13.21/mo / $25.00/mo** |
 
 **Named exclusions — each requires a fresh board decision before any spend:**
 dedicated HSM (~$2,100–2,400/mo), L1 chain (+$150–750/mo), live curated partner
