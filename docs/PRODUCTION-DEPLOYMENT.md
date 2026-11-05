@@ -75,6 +75,7 @@ from the Paperclip secret store / provider secret manager, never committed.
 | `RELAYER_CHAIN_RPC` / `RELAYER_CHAIN_ID` / `RELAYER_CHAIN_ADDRESS` | production L2 RPC + expected chain id + address | config (§1.3) |
 | `RELAYER_BUILD_REVISION` | git sha | CI/deploy |
 | `VITE_RELAYER_URL` (app build) | `https://relayer.mydaywas.com` | §1.4 |
+| `VITE_COLLECT_URL` (app build) | `https://mydaywas.com/api/collect` (cross-origin to the OBS-125 collector on the landing site; the CSP `connect-src` allow-list carries `https://mydaywas.com`) | §1.4/§9 |
 
 ### 2.1 Operator publish auth and client-IP header (M1/H1, OBS-760)
 
@@ -160,9 +161,15 @@ substituted at provisioning. The ordered sequence of record is
    runtime bytecode at the deployed address against the compiled artifact —
    the same procedure used for the 2026-10-31 staging redeploy (first-divergence
    check). Selector `recordBatch` == `0x0f4d576c`.
-9. **Wire the app:** set `VITE_RELAYER_URL=https://relayer.mydaywas.com` in
-   the diary production build; attach `app.mydaywas.com` to Netlify; confirm
-   the landing CTA resolves. App URL must return 200 over TLS.
+9. **Wire the app:** set `VITE_RELAYER_URL=https://relayer.mydaywas.com` and
+   `VITE_COLLECT_URL=https://mydaywas.com/api/collect` in the diary production
+   build (both are Netlify build-environment variables on the `mydaywas-app`
+   site — the same mechanism, not a committed value); attach
+   `app.mydaywas.com` to Netlify; confirm the landing CTA resolves. App URL
+   must return 200 over TLS. **`VITE_COLLECT_URL` unset ⇒ the mdw analytics
+   emitter is dormant** (no endpoint ⇒ no event; the D7/D13 pre-launch guard),
+   and the collector accepts the app origin `https://app.mydaywas.com` as its
+   only CORS origin — an absent/other origin gets no `Access-Control-Allow-Origin`.
 10. **Monitoring:** LB uptime probe on `GET /healthz`; alert sink
     (`RELAYER_ALERT_WEBHOOK`) wired for all alert reasons — the sink now
     carries **nine** reason codes (a superset of the required seven),

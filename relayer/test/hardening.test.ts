@@ -158,6 +158,16 @@ describe("OBS-760 M1: trusted client IP", () => {
     );
   });
 
+  // OBS-778: Node lower-cases incoming header keys, so a mixed-case configured
+  // name must still match. Pre-fix this returned the x-forwarded-for last hop
+  // (a silent rate-shaping degradation); the assertion discriminates.
+  it("matches a MIXED-CASE configured client-IP header name", () => {
+    expect(
+      clientIp(fake({ "fly-client-ip": "9.9.9.9", "x-forwarded-for": "1.1.1.1, 2.2.2.2" }, "10.0.0.1"), "Fly-Client-IP"),
+    ).toBe("9.9.9.9");
+    expect(clientIp(fake({ "x-relayer-client-ip": "8.8.8.8" }), "X-Relayer-Client-IP")).toBe("8.8.8.8");
+  });
+
   it("uses the TRUSTED LAST hop of x-forwarded-for, never the spoofable leftmost", () => {
     expect(clientIp(fake({ "x-forwarded-for": "6.6.6.6, 5.5.5.5" }))).toBe("5.5.5.5");
     expect(clientIp(fake({ "x-forwarded-for": "6.6.6.6" }))).toBe("6.6.6.6");

@@ -126,7 +126,10 @@ export function secretMatches(provided: string, expected: string): boolean {
  */
 export function clientIp(req: IncomingMessage, platformHeader?: string): string {
   if (platformHeader) {
-    const v = req.headers[platformHeader];
+    // OBS-778: Node lower-cases every incoming header key, so a mixed-case
+    // configured name (e.g. `Fly-Client-IP`) never matches `req.headers` and
+    // the lookup silently falls through to x-forwarded-for. Normalise first.
+    const v = req.headers[platformHeader.toLowerCase()];
     const s = Array.isArray(v) ? v[0] : v;
     if (typeof s === "string" && s.trim() !== "") return s.trim();
   }

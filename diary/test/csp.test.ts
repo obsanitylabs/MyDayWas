@@ -5,7 +5,13 @@ import { describe, expect, it } from "vitest";
 // docs/PRODUCTION-DOMAIN-DECISION.md, deploy/README.md). connect-src 'self'
 // alone silently broke the only network path (shareSignal POST); this test
 // fails the build if the CSP ever regresses to blocking the relayer again.
+//
+// OBS-783 adds the second network path: the mdw analytics emitter POSTs to the
+// OBS-125 collector on the landing site (VITE_COLLECT_URL, cross-origin), so
+// connect-src must also allow that exact origin. The allow-list is now exactly
+// these THREE sources — no wildcard, no scheme, no blind widening.
 const PRODUCTION_RELAYER_ORIGIN = "https://relayer.mydaywas.com";
+const PRODUCTION_COLLECT_ORIGIN = "https://mydaywas.com";
 
 const html = Object.values(
   import.meta.glob("../index.html", { query: "?raw", import: "default", eager: true }),
@@ -32,10 +38,11 @@ describe("shipped CSP permits the configured relayer origin (OBS-450)", () => {
     expect(directive("frame-ancestors")).toBe("'none'");
   });
 
-  it("connect-src allows 'self' AND the production relayer origin", () => {
+  it("connect-src allows 'self', the relayer origin AND the collector origin", () => {
     const sources = directive("connect-src").split(/\s+/);
     expect(sources).toContain("'self'");
     expect(sources).toContain(PRODUCTION_RELAYER_ORIGIN);
+    expect(sources).toContain(PRODUCTION_COLLECT_ORIGIN);
   });
 
   // OBS-523 (S3 from the M6 QA verdict on OBS-231): presence checks alone are
@@ -43,7 +50,7 @@ describe("shipped CSP permits the configured relayer origin (OBS-450)", () => {
   // `data: blob:` (or widened to `http:`/`https:`/`*`) would still pass. These
   // assertions are discriminating: they fail on the old `connect-src 'self'`
   // policy AND on any `data:`/`blob:`/scheme/wildcard variant, and pass only on
-  // the shipped two-source allowlist.
+  // the shipped allowlist.
   it("connect-src does not wildcard or scheme-open the policy", () => {
     const sources = directive("connect-src").split(/\s+/).filter(Boolean);
     expect(sources).not.toContain("*");
@@ -53,12 +60,12 @@ describe("shipped CSP permits the configured relayer origin (OBS-450)", () => {
     expect(sources).not.toContain("blob:");
   });
 
-  it("connect-src is exactly the allowlist ('self' + production relayer origin)", () => {
+  it("connect-src is exactly the three-source allowlist (OBS-783)", () => {
     const sources = directive("connect-src").split(/\s+/).filter(Boolean);
-    expect(sources).toEqual(["'self'", PRODUCTION_RELAYER_ORIGIN]);
+    expect(sources).toEqual(["'self'", PRODUCTION_RELAYER_ORIGIN, PRODUCTION_COLLECT_ORIGIN]);
     // No source may be a scheme/wildcard or an unlisted origin.
     for (const src of sources) {
-      expect(["'self'", PRODUCTION_RELAYER_ORIGIN]).toContain(src);
+      expect(["'self'", PRODUCTION_RELAYER_ORIGIN, PRODUCTION_COLLECT_ORIGIN]).toContain(src);
     }
   });
 });

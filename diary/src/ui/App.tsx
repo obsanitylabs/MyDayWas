@@ -7,6 +7,7 @@ import { SIGNAL_DISCLOSURE, SIGNALS_TITLE, SIGNALS_TITLE_HINT } from "../signals
 import { buildSignalPayload, getContributorToken, httpTransport, rotateContributorToken } from "../signals/submit";
 import { purgeSharedAccountState } from "../app/accountCleanup";
 import { isFollowUpEnabled, markPrompted, onDeviceFollowUp, setFollowUpEnabled, shouldPromptFor, skipPrompt } from "../followup/prompt";
+import { collectEndpoint, emitEntrySaved, emitEntryStarted, emitMdw, type AnalyticsDeps } from "../analytics/events";
 import { getReferralPseudonym, rotateReferralPseudonym } from "../referral/pseudonym";
 import {
   REGIONS,
@@ -66,6 +67,24 @@ export function App(): React.ReactElement {
 
   // M4: anonymous signals, follow-up prompt, referral stub
   const storage = globalThis.localStorage;
+  // OBS-350: first-party mdw analytics (metric dictionary v3). Dormant unless a
+  // collector endpoint is configured at build time (D7/D13 — ships at M6).
+  const analyticsDeps: AnalyticsDeps = {
+    storage,
+    endpoint: collectEndpoint(),
+    search: globalThis.location?.search ?? "",
+    referrer: globalThis.document?.referrer,
+  };
+  // OBS-783 F2: `entry_started` fires once per compose cycle (first non-empty
+  // keystroke), reset on save. A ref (not state) — it never renders.
+  const entryStartedRef = useRef(false);
+  const onComposeChange = (v: string) => {
+    setText(v);
+    if (!entryStartedRef.current && v.trim().length > 0) {
+      entryStartedRef.current = true;
+      emitEntryStarted(analyticsDeps);
+    }
+  };
   const [signalsOn, setSignalsOn] = useState(() => getSignalsOptIn(storage).enabled);
   const [signalStatus, setSignalStatus] = useState<string>("");
   const [followUp, setFollowUp] = useState<{ id: string; sentiment: Sentiment } | null>(null);
@@ -151,13 +170,19 @@ export function App(): React.ReactElement {
     try {
       const saved = await diary.addEntry(text, sentiment);
       setText("");
+      entryStartedRef.current = false; // next compose starts a fresh F2 pair
       await refresh(diary);
       setStatus(online ? "saved locally; will sync" : "saved locally (offline)");
+      // OBS-783 F2: `entry_saved` on every successful save; the first-ever save
+      // also fires `activation_complete` (at-most-once, attr-only, no PII).
+      emitEntrySaved(analyticsDeps);
       // M4: one lightweight follow-up prompt per entry — ONLY after the
       // Settings opt-in (default off), skippable/disableable, on-device only.
       if (shouldPromptFor(storage, saved.id)) {
         markPrompted(storage, saved.id);
         setFollowUp({ id: saved.id, sentiment: saved.sentiment });
+        // At most one prompt per saved entry (A12) — shouldPromptFor enforces it.
+        emitMdw("followup_prompted", analyticsDeps);
       }
     } catch (e) {
       setErr(String(e));
@@ -169,8 +194,17 @@ export function App(): React.ReactElement {
   // ---- M4: anonymous signals ----
   const RELAYER_URL = import.meta.env.VITE_RELAYER_URL as string | undefined;
   const toggleSignals = async (on: boolean) => {
-    setSignalsOptIn(storage, on);
+    const was = getSignalsOptIn(storage).enabled;
+    try {
+      setSignalsOptIn(storage, on); // persistence must succeed before the event fires
+    } catch (e) {
+      setErr(String(e));
+      return;
+    }
     setSignalsOn(on);
+    // One event per consent transition only (D12): off→on = signals_optin,
+    // on→off = signals_optout; a re-confirm of the current state emits nothing.
+    if (was !== on) emitMdw(on ? "signals_optin" : "signals_optout", analyticsDeps);
     if (!on) {
       rotateContributorToken(storage);
       setSignalStatus("Off — sharing stopped and your signal pseudonym was rotated.");
@@ -221,6 +255,9 @@ export function App(): React.ReactElement {
       setFollowUp(null);
       setFollowUpText("");
       await refresh(diary);
+      // At most one per prompted prompt; answers carry no text (followUpText is
+      // user-generated content and never enters the event) — §2.2.
+      emitMdw("followup_answered", analyticsDeps);
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -465,7 +502,7 @@ export function App(): React.ReactElement {
             <h2>How was your day?</h2>
             <textarea
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => onComposeChange(e.target.value)}
               placeholder="Write here. Only you can read this — it is encrypted before it leaves the page."
             />
             <div className="row">
@@ -495,7 +532,7 @@ export function App(): React.ReactElement {
                 <button className="primary" onClick={answerFollowUp} disabled={busy || !followUpText.trim()}>
                   Save as entry
                 </button>
-                <button onClick={() => { skipPrompt(storage, followUp.id); setFollowUp(null); setFollowUpText(""); }}>
+                <button onClick={() => { skipPrompt(storage, followUp.id); setFollowUp(null); setFollowUpText(""); emitMdw("followup_skipped", analyticsDeps); }}>
                   Skip
                 </button>
                 <span className="spacer" />

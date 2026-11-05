@@ -84,8 +84,10 @@ Every value reaches the running relayer through one of exactly three paths:
    stays inside the provider and provider credentials reach the adapter via
    the workload identity (`docs/PRODUCTION-IAM.md`), never via files/env.
 
-The app build gets `VITE_RELAYER_URL=https://relayer.mydaywas.com` at **build**
-time (Netlify env) per `docs/PRODUCTION-DOMAIN-DECISION.md`.
+The app build gets `VITE_RELAYER_URL=https://relayer.mydaywas.com` and
+`VITE_COLLECT_URL=https://mydaywas.com/api/collect` at **build** time (Netlify
+env) per `docs/PRODUCTION-DOMAIN-DECISION.md` and `docs/PRODUCTION-DEPLOYMENT.md`
+§9. `VITE_COLLECT_URL` unset keeps the mdw analytics emitter dormant.
 
 ## Deploy [gated]
 

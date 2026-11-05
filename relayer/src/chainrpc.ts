@@ -385,7 +385,11 @@ export class RpcLegacySender {
     return txHash;
   }
 
-  /** H2.2: poll for a receipt; resolve on status==1, plain-throw on revert, uncertain on timeout. */
+  /**
+   * H2.2/OBS-778: poll for a receipt. Resolve on status==0x1; plain-throw only
+   * on a DEFINITE revert (status==0x0); treat an absent/unknown status, a
+   * lookup failure, or a timeout as UNCERTAIN (keep the ledger claim).
+   */
   private async awaitReceipt(txHash: string): Promise<void> {
     const poll = this.receiptPoll;
     for (let attempt = 0; attempt < Math.max(1, poll.attempts); attempt++) {
@@ -400,12 +404,20 @@ export class RpcLegacySender {
         throw new BroadcastUncertainError(`receipt lookup failed for ${txHash} (tx state unknown): ${(e as Error).message}`);
       }
       if (receipt === null || receipt === undefined) continue; // not yet included
-      if (receipt.status !== "0x1") {
+      if (receipt.status === "0x1") return; // mined and executed
+      if (receipt.status === "0x0") {
         // Mined but reverted: recordBatch was rejected (paused / not relayer /
-        // out-of-gas) — a definite no-effect failure, safe to release the claim.
-        throw new Error(`recordBatch reverted (receipt status ${receipt.status ?? "unknown"}) for tx ${txHash}`);
+        // out-of-gas) — a DEFINITE no-effect failure, safe to release the claim.
+        throw new Error(`recordBatch reverted (receipt status 0x0) for tx ${txHash}`);
       }
-      return;
+      // OBS-778: an ABSENT or UNKNOWN status is not a definite revert. The tx
+      // may have been mined with an effect we cannot see; treating it as a
+      // definite failure would release the day's ledger claim and let a retry
+      // double-commit the add-only per-day counts. Keep the claim (uncertain) —
+      // same class as a lookup failure or a receipt timeout.
+      throw new BroadcastUncertainError(
+        `receipt status unknown (receipt status ${receipt.status ?? "absent"}) for tx ${txHash}: tx state unknown`,
+      );
     }
     throw new BroadcastUncertainError(`no receipt for ${txHash} after ${poll.attempts} attempts (inclusion unknown)`);
   }
