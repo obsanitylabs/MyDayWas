@@ -52,7 +52,7 @@ primary_region = "iad"            # placeholder — set at provisioning
   # diary's POST path on. Non-secret. Unset or empty = CLOSED (no browser
   # origin may POST); exact origins only, never "*" or a reflected Origin.
   # Value = the app origin of record (docs/PRODUCTION-DOMAIN-DECISION.md).
-  RELAYER_ALLOWED_ORIGINS = "https://app.mydaywas.com"
+  RELAYER_ALLOWED_ORIGINS = "https://mydaywas.com"
 
 # F3/OBS-234: SQLite WAL on a persistent LOCAL volume, single-writer topology.
 [[mounts]]

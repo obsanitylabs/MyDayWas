@@ -50,6 +50,11 @@ CTA already points there) + **`relayer.mydaywas.com`** (relayer, behind the
 TLS LB). Static app hosting stays Netlify (already in production use —
 OBS-125/163) with the custom domain attached once DNS resolves.
 
+> **Correction (2026-11-05, OBS-824):** `app.mydaywas.com` no longer exists.
+> The OBS-789 consolidation deleted the `mydaywas-app` Netlify site and its DNS
+> records; the diary app now ships from **`https://mydaywas.com/app/`** on the
+> single apex site. Every "app origin" below means **`https://mydaywas.com`**.
+
 ### 1.5 LM Studio key (M6 D2, from OBS-227): **done** — the key is stored as a
 Paperclip managed secret (`lmstudio116-api-key`, env delivery, secret-store
 ref fe66…c328); no plaintext copy is required in any repo/config path. Rotation
@@ -65,7 +70,7 @@ from the Paperclip secret store / provider secret manager, never committed.
 | `RELAYER_PORT` | 8081 (behind LB) | config |
 | `RELAYER_REQUIRE_TLS` | `1` | checklist §3 |
 | `RELAYER_RATE_PER_MIN` | `60` | checklist §4 runbook default |
-| `RELAYER_ALLOWED_ORIGINS` | `https://app.mydaywas.com` (exact app origin; comma-separated list; unset/empty = closed) | config (`relayer/fly.toml` `[env]`) |
+| `RELAYER_ALLOWED_ORIGINS` | `https://mydaywas.com` (exact app origin; comma-separated list; unset/empty = closed) — **updated 2026-11-05 (OBS-824)**: was `https://app.mydaywas.com`, a domain OBS-789 deleted | config (`relayer/fly.toml` `[env]`) |
 | `RELAYER_CLIENT_IP_HEADER` | `fly-client-ip` (platform-set header read for the rate-shaping client IP; falls back to the trusted last hop of `x-forwarded-for`, then the socket address) | config (`relayer/fly.toml` `[env]`) |
 | `RELAYER_ALERT_WEBHOOK` | ops SNS/PagerDuty ingress URL | secret store |
 | `RELAYER_PUBLISH_SECRET` | **mandatory** in the production profile — shared secret for the `x-relayer-auth` header on `POST /v1/publish` (fail-closed boot without it) | secret store |

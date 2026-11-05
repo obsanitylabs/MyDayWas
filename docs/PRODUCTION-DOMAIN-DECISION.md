@@ -1,5 +1,12 @@
 # Production domain decision — decision record (OBS-313 D7)
 
+> **Superseded topology (2026-11-05, OBS-824):** OBS-789 deleted the
+> `mydaywas-app` Netlify site and the `app.mydaywas.com` DNS records (NXDOMAIN).
+> The diary app now ships from **`https://mydaywas.com/app/`** on the single
+> apex site, and the app origin of record for every CORS allow-list
+> (`RELAYER_ALLOWED_ORIGINS`, `MDW_COLLECT_ORIGIN`) is **`https://mydaywas.com`**.
+> The record below is preserved as decision history.
+
 **Owner:** CTO. **Recorded:** 2026-10-31. **Status:** decided + **stood up
 2026-10-31 (OBS-442)** — `app.mydaywas.com` is live over TLS; `relayer`
 record deferred to LB provisioning (see Known limitation).

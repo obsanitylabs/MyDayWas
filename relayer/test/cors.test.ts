@@ -25,7 +25,7 @@ import { LocalDevCustody } from "../src/keycustody.ts";
 import { createSignalServer } from "../src/server.ts";
 import { MS_PER_DAY, type Sentiment } from "../src/types.ts";
 
-const ALLOWED = "https://app.mydaywas.com";
+const ALLOWED = "https://mydaywas.com";
 const SECOND_ALLOWED = "https://app.example.com";
 const DENIED = "https://not-allowed.example.com";
 const today = Math.floor(Date.now() / MS_PER_DAY);
