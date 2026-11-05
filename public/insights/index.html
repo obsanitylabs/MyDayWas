@@ -49,6 +49,7 @@
     <nav>
       <a href="#traction">Traction</a><a href="#product">Product</a
       ><a href="#quality">Data quality</a><a href="#funnel">Campaign funnel</a
+      ><a href="#mdw">MyDayWas funnel (F3/F4)</a
       ><a href="#onchain">On-chain overlay</a>
       <button onclick="window.print()">Export PDF</button>
     </nav>
@@ -85,6 +86,10 @@
     <section id="funnel">
       <h2>Campaign funnel — phreaking.fun (C0–C3)</h2>
       <div id="cf"></div>
+    </section>
+    <section id="mdw">
+      <h2>MyDayWas funnel — F3 opt-in / F4 follow-up</h2>
+      <div id="m"></div>
     </section>
     <section id="onchain">
       <h2>On-chain overlay (admin-only, Sepolia)</h2>
@@ -279,6 +284,78 @@
           (oc.transfersNote || "") +
           "</p>";
       }
+      // OBS-350/OBS-755 — mdw signals opt-in (F3) + follow-up usage (F4). Reads the API
+      // key `mdw` per the OBS-755 ruling (OBS-266 §2 definition of record). The module
+      // reports `dormant` pre-launch (no mdw events yet), so the panel renders "dormant"
+      // rather than a misleading 0. All numbers come from GET /api/insights; nothing is
+      // recomputed from raw events.
+      function renderMdw(d) {
+        const m = d.mdw || {};
+        if (!m.f3 && !m.f4) {
+          el("m").innerHTML =
+            "<p><em>mdw funnel not present in this response</em></p>";
+          return;
+        }
+        const pct = (n) =>
+          n === null || n === undefined ? "—" : (n * 100).toFixed(1) + "%";
+        const num = (n) => (n === null || n === undefined ? "—" : n);
+        const f3 = m.f3 || {};
+        const f4 = m.f4 || {};
+        if (m.dormant) {
+          el("m").innerHTML =
+            '<p><em>dormant — no mdw events yet (pre-launch; rates are null, not 0)</em></p>' +
+            table([
+              ["metric", "value"],
+              ["F3 opted-in users", num(f3.optedInUsers)],
+              ["F4 prompted", num(f4.prompted)],
+            ]);
+          return;
+        }
+        el("m").innerHTML =
+          "<h3>F3 — anonymous signals opt-in</h3>" +
+          table([
+            ["metric", "value", "definition"],
+            [
+              "opted-in users",
+              num(f3.optedInUsers),
+              "distinct anonymous_id · signals_optin",
+            ],
+            [
+              "activated users",
+              num(f3.activatedUsers),
+              "distinct anonymous_id · activation_complete (F3 denominator)",
+            ],
+            [
+              "opt-in rate",
+              pct(f3.optInRate),
+              "opted-in ÷ activated (null until activation exists)",
+            ],
+            [
+              "revocations",
+              num(f3.revocations),
+              "signals_optout (monitoring only, not a funnel step)",
+            ],
+            [
+              "revocation rate of opted-in",
+              pct(f3.revocationRateOfOptedIn),
+              "revocations ÷ opted-in",
+            ],
+          ]) +
+          "<h3>F4 — follow-up usage</h3>" +
+          table([
+            ["metric", "value", "definition"],
+            ["prompted", num(f4.prompted), "followup_prompted"],
+            ["answered", num(f4.answered), "followup_answered"],
+            ["skipped", num(f4.skipped), "followup_skipped"],
+            ["answered rate", pct(f4.answeredRate), "answered ÷ prompted"],
+            ["skip rate", pct(f4.skipRate), "skipped ÷ prompted"],
+            [
+              "per-user answered ÷ prompted",
+              pct(f4.perUserAnsweredOverPrompted),
+              "distinct users with ≥1 answered ÷ ≥1 prompted",
+            ],
+          ]);
+      }
       function render(d, siteLabel) {
         const wau = Object.entries(d.wau || {}).map(([w, n]) => [w, n]);
         const coh = Object.entries(d.retentionCohorts || {}).map(
@@ -346,6 +423,7 @@
           const data = await load("", tok);
           await render(data, location.hostname);
           await renderCampaign(data);
+          renderMdw(data);
           const peer = new URLSearchParams(location.search).get("peer"); // investor board: ?peer=https://phreaking.fun
           if (peer) await render(await load(peer, tok), new URL(peer).hostname);
           el("status").textContent = "ok";

@@ -30,17 +30,42 @@ const PFF_EVENTS = {
   error: ['error_code', 'error_surface', 'message_key'],
 };
 
+// OBS-350 — MyDayWas (metric dictionary v2 §5.2 + v3 §3). v3 adds five
+// closed-list consent/follow-up events, all carrying ONLY the §2.1 common
+// attributes (no per-event attributes). The five are the last five entries.
+const MDW_EVENTS = {
+  page_view: ['page_path'],
+  session_start: ['is_returning', 'days_since_last_session'],
+  entry_started: [],
+  entry_saved: [],
+  activation_complete: ['first_session', 'time_to_activation_s', 'activation_path'],
+  core_action: ['action_type'],
+  funnel_step: ['funnel_name', 'step_index', 'step_name'],
+  share_click: ['share_target', 'surface'],
+  error: ['error_code', 'error_surface', 'message_key', 'api_status'],
+  // v3 §3 — no per-event attributes on any of the five.
+  signals_optin: [],
+  signals_optout: [],
+  followup_prompted: [],
+  followup_answered: [],
+  followup_skipped: [],
+};
+
 const ENUMS = {
-  product: ['ubs', 'pff', 'mydaywas'],
+  // 'mdw' is the metric-dictionary product code (v2 D6); 'mydaywas' is the
+  // historical value the live site emitted (OBS-721) and is kept as a
+  // deprecated alias so existing page_view/session_start data still validates.
+  product: ['ubs', 'pff', 'mdw', 'mydaywas'],
   role: ['donor', 'scientist', 'community', 'other'],
   action_type_ubs: ['experiment_run', 'result_save', 'result_share'],
   action_type_pff: ['box_opened', 'collection_viewed'],
+  action_type_mdw: ['entry_saved', 'entry_edited', 'past_entry_viewed', 'unclassified'],
   box_type: ['mystery', 'white', 'silver', 'blue'],
   share_target: ['copy_link', 'x', 'farcaster', 'other'],
-  surface: ['result_link', 'result_card'],
+  surface: ['result_link', 'result_card', 'day_summary'],
   error_surface: ['client', 'api', 'wallet', 'tx'],
   wallet_type: ['metamask', 'walletconnect', 'web3auth', 'keplr', 'other'],
-  funnel_name: ['pff_purchase'],
+  funnel_name: ['pff_purchase', 'mdw_onboarding'],
   experiment_type: ['unclassified'],
   utm_source: ['direct', 'x', 'farcaster', 'telegram', 'discord', 'reddit', 'hackathon', 'dev_community'],
   utm_medium: ['organic_social', 'community', 'event', 'content', 'referral'],
@@ -84,8 +109,8 @@ const COMMON_TYPES = {
 export function validateEvent(ev) {
   if (!ev || typeof ev !== 'object') return { ok: false, reason: 'not-an-object' };
   const product = ev.product;
-  if (product !== 'ubs' && product !== 'pff' && product !== 'mydaywas') return { ok: false, reason: 'bad-product' };
-  const table = product === 'ubs' || product === 'mydaywas' ? UBS_EVENTS : PFF_EVENTS;
+  if (product !== 'ubs' && product !== 'pff' && product !== 'mdw' && product !== 'mydaywas') return { ok: false, reason: 'bad-product' };
+  const table = product === 'ubs' ? UBS_EVENTS : product === 'pff' ? PFF_EVENTS : MDW_EVENTS;
   const name = ev.event_name;
   if (!Object.prototype.hasOwnProperty.call(table, name)) return { ok: false, reason: 'unknown-event-name' };
 
@@ -129,7 +154,7 @@ export function validateEvent(ev) {
         if (typeOk(v, 'int')) out.chain_id = v; else dropped.push(k); break;
       case 'role': case 'share_target': case 'surface': case 'wallet_type': case 'box_type':
       case 'error_surface': case 'funnel_name': case 'experiment_type': case 'action_type': {
-        const list2 = k === 'action_type' ? (product === 'ubs' ? ENUMS.action_type_ubs : ENUMS.action_type_pff)
+        const list2 = k === 'action_type' ? (product === 'ubs' ? ENUMS.action_type_ubs : product === 'pff' ? ENUMS.action_type_pff : ENUMS.action_type_mdw)
           : k === 'surface' && name === 'share_click' ? ENUMS.surface
           : k === 'funnel_name' ? ENUMS.funnel_name
           : ENUMS[k] || [];
