@@ -86,8 +86,12 @@ Every value reaches the running relayer through one of exactly three paths:
 
 The app build gets `VITE_RELAYER_URL=https://relayer.mydaywas.com` and
 `VITE_COLLECT_URL=https://mydaywas.com/api/collect` at **build** time (Netlify
-env) per `docs/PRODUCTION-DOMAIN-DECISION.md` and `docs/PRODUCTION-DEPLOYMENT.md`
-§9. `VITE_COLLECT_URL` unset keeps the mdw analytics emitter dormant.
+env, single `mydaywas.com` site after the OBS-789 consolidation) per
+`docs/PRODUCTION-DOMAIN-DECISION.md`, `docs/OBS-789-CONSOLIDATION.md` and
+`docs/PRODUCTION-DEPLOYMENT.md` §9. The app is served same-origin at
+`https://mydaywas.com/app/`, so the collector POST to `/api/collect` is
+same-origin (a root-relative `/api/collect` is equivalent).
+`VITE_COLLECT_URL` unset keeps the mdw analytics emitter dormant.
 
 ## Deploy [gated]
 

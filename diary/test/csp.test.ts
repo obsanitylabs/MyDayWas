@@ -7,9 +7,12 @@ import { describe, expect, it } from "vitest";
 // fails the build if the CSP ever regresses to blocking the relayer again.
 //
 // OBS-783 adds the second network path: the mdw analytics emitter POSTs to the
-// OBS-125 collector on the landing site (VITE_COLLECT_URL, cross-origin), so
-// connect-src must also allow that exact origin. The allow-list is now exactly
-// these THREE sources — no wildcard, no scheme, no blind widening.
+// OBS-125 collector via VITE_COLLECT_URL. After the OBS-789 consolidation the
+// app is served same-origin at https://mydaywas.com/app/ and the collector at
+// https://mydaywas.com/api/collect, so 'self' already covers it; the explicit
+// origin is retained (identical to 'self', not a widening) so the allow-list is
+// robust if the collector is ever moved back cross-origin. The allow-list is
+// exactly these THREE sources — no wildcard, no scheme, no blind widening.
 const PRODUCTION_RELAYER_ORIGIN = "https://relayer.mydaywas.com";
 const PRODUCTION_COLLECT_ORIGIN = "https://mydaywas.com";
 
