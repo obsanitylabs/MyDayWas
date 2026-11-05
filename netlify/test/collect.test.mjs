@@ -1,5 +1,10 @@
 // OBS-783 — collector CORS tests (exact-origin, preflight + error branches).
-// Run: node --test netlify/functions/collect.test.mjs
+// Run: node --test netlify/test/collect.test.mjs
+//
+// Lives OUTSIDE netlify/functions/ on purpose: every file in the functions dir is
+// auto-deployed as a Netlify Function, and a name containing a dot (`collect.test`)
+// is rejected, which failed the site deploy. Mirrors the netlify/shared/*.test.mjs
+// convention.
 //
 // The handler is exercised directly with a minimal Request-like object. Only
 // the pre-flight and the pre-store error branches are driven here (the store
@@ -7,7 +12,7 @@
 // surface this change adds.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import collect from './collect.mjs';
+import collect from '../functions/collect.mjs';
 
 const APP_ORIGIN = 'https://app.mydaywas.com';
 
