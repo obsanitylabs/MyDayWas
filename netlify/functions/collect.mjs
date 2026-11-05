@@ -21,7 +21,7 @@ const MAX_BATCH_EVENTS = 50; // cheap-DoS cap: events past the cap are rejected+
 // and no blind `Origin` reflection. The ACAO is present on the preflight, on
 // the POST responses, AND on every error branch so the browser can read the
 // error (the same defect class the relayer CORS gap had on 2026-11-01).
-const ALLOWED_ORIGIN = (process.env.MDW_COLLECT_ORIGIN || 'https://app.mydaywas.com').trim();
+const ALLOWED_ORIGIN = (process.env.MDW_COLLECT_ORIGIN || 'https://mydaywas.com').trim();
 function corsHeaders(origin) {
   const headers = { vary: 'Origin' };
   if (origin && origin === ALLOWED_ORIGIN) headers['access-control-allow-origin'] = ALLOWED_ORIGIN;

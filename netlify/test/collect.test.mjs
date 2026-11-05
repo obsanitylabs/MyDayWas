@@ -14,7 +14,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import collect from '../functions/collect.mjs';
 
-const APP_ORIGIN = 'https://app.mydaywas.com';
+const APP_ORIGIN = 'https://mydaywas.com';
 
 function req({ method = 'POST', origin, body = '{}' } = {}) {
   const headers = new Map();
