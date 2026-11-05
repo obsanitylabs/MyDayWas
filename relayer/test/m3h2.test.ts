@@ -314,3 +314,91 @@ describe("OBS-775 H2 edge: classify definite RPC rejections vs uncertain failure
     await expect(pipeline.publishDay(dayId, publishableAt(dayId) + 1)).rejects.toThrow(/already published/);
   });
 });
+
+// ---- OBS-778: an absent/unknown receipt status is NOT a definite revert ----
+
+describe("OBS-778: receipt status handling keeps the claim on an unknown status", () => {
+  type RpcOutcome = { result?: unknown } | { error: { code: number | string; message: string } };
+  function rpcFetch(handler: (method: string, params: unknown[]) => RpcOutcome): typeof fetch {
+    return async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { id: number; method: string; params: unknown[] };
+      const outcome = handler(body.method, body.params);
+      const json = "error" in outcome
+        ? { jsonrpc: "2.0", id: body.id, error: outcome.error }
+        : { jsonrpc: "2.0", id: body.id, result: outcome.result };
+      return new Response(JSON.stringify(json), { status: 200, headers: { "content-type": "application/json" } });
+    };
+  }
+  function keyMaterial(): { keyHex: string; eoa: string } {
+    const keyBytes = randomBytes(32);
+    const pub65 = secpGetPublicKey(keyBytes, false);
+    return {
+      keyHex: bytesToHex(keyBytes),
+      eoa: "0x" + Buffer.from(keccak_256(pub65.subarray(1))).slice(-20).toString("hex"),
+    };
+  }
+  const to = "0xEdeAC98".padEnd(42, "0");
+  const data = "0x0f4d576c" + "0".repeat(64 * 5);
+
+  function senderWithReceipt(receipt: unknown): { sender: RpcLegacySender; to: string; data: string } {
+    const { keyHex, eoa } = keyMaterial();
+    const sender = new RpcLegacySender({
+      rpcUrl: "https://rpc.test",
+      expectedChainId: 11155111,
+      eoaAddress: eoa,
+      keyHex,
+      sleep: async () => {},
+      fetchImpl: rpcFetch((method, params) => {
+        if (method === "eth_chainId") return { result: "0xaa36a7" };
+        if (method === "eth_gasPrice") return { result: "0x77359400" };
+        if (method === "eth_getTransactionCount") return { result: "0x0" };
+        if (method === "eth_sendRawTransaction") return { result: bytesToHex(keccak_256(hexToBytes(String(params[0])))) };
+        if (method === "eth_getTransactionReceipt") return { result: receipt };
+        throw new Error(`unexpected rpc ${method}`);
+      }),
+    });
+    return { sender, to, data };
+  }
+
+  it("an ABSENT receipt status is UNCERTAIN (not a plain definite revert)", async () => {
+    const { sender, to: t, data: d } = senderWithReceipt({}); // mined, but no status field
+    const caught = await sender.send(t, d).catch((e) => e);
+    expect(caught).toBeInstanceOf(BroadcastUncertainError);
+  });
+
+  it("an UNKNOWN receipt status is UNCERTAIN", async () => {
+    const { sender, to: t, data: d } = senderWithReceipt({ status: "0x2" });
+    await expect(sender.send(t, d)).rejects.toBeInstanceOf(BroadcastUncertainError);
+  });
+
+  it("a status 0x0 RECEIPT is a definite revert (plain Error, claim releasable)", async () => {
+    const { sender, to: t, data: d } = senderWithReceipt({ status: "0x0" });
+    const caught = await sender.send(t, d).catch((e) => e);
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBeInstanceOf(BroadcastUncertainError);
+    expect((caught as Error).message).toMatch(/reverted/);
+  });
+
+  it("pipeline: an unknown receipt status keeps the ledger claim (no double-commit)", async () => {
+    const { sender, to: t, data: d } = senderWithReceipt({}); // uncertain
+    const custody = new LocalDevCustody();
+    const store = new SignalStore((x, y, z) => custody.cellToken(x, y, z));
+    const dayId = 20_002;
+    await store.record(
+      { v: 1, sentiment: "NEUTRAL", dayId, contributorToken: "tok_m3h2_unknown_status" },
+      dayId * MS_PER_DAY + 12 * 3_600_000,
+    );
+    const submitter: ChainSubmitter = {
+      name: "rpc-unknown-receipt-submitter",
+      async submitRecordBatch(batch: RecordBatch): Promise<RecordBatch> {
+        await sender.send(t, d);
+        return batch;
+      },
+    };
+    const ledger = new MemoryPublicationLedger();
+    const pipeline = new PublicationPipeline(store, custody, submitter, { kThreshold: 1, delayMs: 0, ledger });
+    await expect(pipeline.publishDay(dayId, publishableAt(dayId) + 1)).rejects.toBeInstanceOf(BroadcastUncertainError);
+    // Claim kept: a retry is refused, so the add-only counts cannot double-commit.
+    await expect(pipeline.publishDay(dayId, publishableAt(dayId) + 1)).rejects.toThrow(/already published/);
+  });
+});
