@@ -49,7 +49,7 @@
     <nav>
       <a href="#traction">Traction</a><a href="#product">Product</a
       ><a href="#quality">Data quality</a><a href="#funnel">Campaign funnel</a
-      ><a href="#mdw">MyDayWas funnel (F3/F4)</a
+      ><a href="#mdw">MyDayWas funnel (F2/F3/F4)</a
       ><a href="#onchain">On-chain overlay</a>
       <button onclick="window.print()">Export PDF</button>
     </nav>
@@ -88,7 +88,7 @@
       <div id="cf"></div>
     </section>
     <section id="mdw">
-      <h2>MyDayWas funnel — F3 opt-in / F4 follow-up</h2>
+      <h2>MyDayWas funnel — F2 activation / F3 opt-in / F4 follow-up</h2>
       <div id="m"></div>
     </section>
     <section id="onchain">
@@ -284,21 +284,25 @@
           (oc.transfersNote || "") +
           "</p>";
       }
-      // OBS-350/OBS-755 — mdw signals opt-in (F3) + follow-up usage (F4). Reads the API
-      // key `mdw` per the OBS-755 ruling (OBS-266 §2 definition of record). The module
+      // OBS-350/OBS-755/OBS-820 — mdw F2 activation + F3 opt-in + F4 follow-up. Reads the
+      // API key `mdw` per the OBS-755 ruling (OBS-266 §2 definition of record). The module
       // reports `dormant` pre-launch (no mdw events yet), so the panel renders "dormant"
-      // rather than a misleading 0. All numbers come from GET /api/insights; nothing is
-      // recomputed from raw events.
+      // and a null rate as "n/a" rather than a misleading 0. All numbers come from
+      // GET /api/insights; nothing is recomputed from raw events.
       function renderMdw(d) {
         const m = d.mdw || {};
-        if (!m.f3 && !m.f4) {
+        if (!m.f2 && !m.f3 && !m.f4) {
           el("m").innerHTML =
             "<p><em>mdw funnel not present in this response</em></p>";
           return;
         }
         const pct = (n) =>
           n === null || n === undefined ? "—" : (n * 100).toFixed(1) + "%";
+        // F2 is a funnel rate: a null (dormant / no denominator) must read n/a, not 0.
+        const f2pct = (n) =>
+          n === null || n === undefined ? "n/a" : (n * 100).toFixed(1) + "%";
         const num = (n) => (n === null || n === undefined ? "—" : n);
+        const f2 = m.f2 || {};
         const f3 = m.f3 || {};
         const f4 = m.f4 || {};
         if (m.dormant) {
@@ -306,12 +310,33 @@
             '<p><em>dormant — no mdw events yet (pre-launch; rates are null, not 0)</em></p>' +
             table([
               ["metric", "value"],
+              ["F2 activation rate", f2pct(f2.activationRate)],
+              ["F2 activated users", num(f2.activatedUsers)],
               ["F3 opted-in users", num(f3.optedInUsers)],
               ["F4 prompted", num(f4.prompted)],
             ]);
           return;
         }
         el("m").innerHTML =
+          "<h3>F2 — activation (first encrypted diary entry)</h3>" +
+          table([
+            ["metric", "value", "definition"],
+            [
+              "activated users",
+              num(f2.activatedUsers),
+              "distinct anonymous_id · activation_complete",
+            ],
+            [
+              "new users (cohort window)",
+              num(f2.newUsers),
+              "distinct new anonymous_id · API New-users figure",
+            ],
+            [
+              "activation rate",
+              f2pct(f2.activationRate),
+              "activated ÷ new (n/a when dormant or no new users)",
+            ],
+          ]) +
           "<h3>F3 — anonymous signals opt-in</h3>" +
           table([
             ["metric", "value", "definition"],

@@ -186,10 +186,13 @@ export default async (req) => {
     // dashboard from GET /api/waitlist/stats (OBS-203); not recomputed here.
     campaignFunnel: campaignFunnel(events),
     // OBS-350/OBS-755 — mdw signals opt-in (F3) + follow-up usage (F4), metric
-    // dictionary v3. Key is `mdw` per the OBS-755 ruling (OBS-266 §2 definition of
-    // record); the exported function name and module file are unchanged.
-    // Dormant pre-launch: no mdw events exist, so every rate is null (0 / n-a).
-    mdw: mdwFunnel(events),
+    // dictionary v3. OBS-820 — F2 activation rate (dictionary v2 §5.1): its
+    // denominator is this response's New-users figure (v3 D13 "in window"), so pass
+    // `newUsers` in; the module cannot recompute "new" (it never sees prior history).
+    // Key is `mdw` per the OBS-755 ruling (OBS-266 §2 definition of record); the
+    // exported function name and module file are unchanged.
+    // Dormant pre-launch: no mdw events exist, so every rate is null, not 0.
+    mdw: mdwFunnel(events, { newUsers }),
   };
 
   // OBS-303 — admin-only on-chain overlay. Served in the same token-gated response,
